@@ -6,7 +6,7 @@ window.__ModuleLoader__.load({
     const NS = 'suzuMemory';
     const TAB = 'dsh-suzu-memory';
     const zh = {
-      memory: '记忆', title: 'Suzu Memory', description: '管理记忆与向量模型。',
+      title: 'Suzu Memory', description: '管理记忆与向量模型。',
       status: '当前会话', loading: '正在读取…', refresh: '刷新状态', processing: '正在整理',
       pending: '有待整理的对话', ready: '暂无待整理对话', review: '打开记忆审核台',
       maintain: '立即整理', working: '正在处理…', failed: '操作未完成，请重试。',
@@ -17,9 +17,10 @@ window.__ModuleLoader__.load({
       conflict: '保存未被接受，可能已被其他页面修改。草稿已保留，请重新载入后再试。',
       unavailable: '当前无法修改配置。', invalid: '请填写 HTTP(S) 地址、模型名称和有效的正整数维度。',
       reload: '重新载入配置', noConsole: '审核台未启用。', error: '整理未完成',
+      noSession: '先选择一个会话，即可在这里管理它的记忆。',
     };
     const en = {
-      memory: 'Memory', title: 'Suzu Memory', description: 'Manage memory and the embedding model.',
+      title: 'Suzu Memory', description: 'Manage memory and the embedding model.',
       status: 'This conversation', loading: 'Loading…', refresh: 'Refresh status', processing: 'Processing',
       pending: 'Conversation awaiting processing', ready: 'No conversation awaiting processing', review: 'Open memory console',
       maintain: 'Process now', working: 'Working…', failed: 'The operation failed. Please retry.',
@@ -30,6 +31,7 @@ window.__ModuleLoader__.load({
       conflict: 'The save was refused, possibly due to another edit. Your draft is retained; reload before retrying.',
       unavailable: 'Settings cannot be edited right now.', invalid: 'Enter an HTTP(S) URL, a model name, and valid positive integer dimensions.',
       reload: 'Reload settings', noConsole: 'The memory console is disabled.', error: 'Processing did not finish',
+      noSession: 'Select a conversation to manage its memory here.',
     };
     const css = `
       .suzu-memory {color:var(--dsw-alias-label-primary);font:inherit;padding:20px;overflow:auto;height:100%;box-sizing:border-box;}
@@ -41,21 +43,13 @@ window.__ModuleLoader__.load({
       .suzu-memory input:not([type=checkbox]) {font:inherit;width:100%;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:9px 11px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);}
       .suzu-memory .suzu-check {display:flex;align-items:center;gap:8px;}
       .suzu-memory fieldset {border:0;padding:0;margin:0;min-width:0;}
-      .suzu-memory button,.suzu-memory a,.suzu-memory-trigger {font:inherit;font-size:13px;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:7px 11px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer;text-decoration:none;}
+      .suzu-memory button,.suzu-memory a {font:inherit;font-size:13px;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:7px 11px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer;text-decoration:none;}
       .suzu-memory button:disabled {opacity:.5;cursor:default;}
-      .suzu-memory :focus-visible,.suzu-memory-trigger:focus-visible {outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px;}
+      .suzu-memory :focus-visible {outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px;}
       .suzu-memory-actions {display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;}
       .suzu-memory-message {white-space:pre-wrap;}
-      .suzu-memory-trigger {white-space:nowrap;}
     `;
     const style = () => h('style', null, css);
-
-    function MemoryButton({ t, openMemory }) {
-      return h(React.Fragment, null, style(), h('button', {
-        type: 'button', className: 'suzu-memory-trigger', onClick: openMemory,
-        title: t('title'), 'aria-label': t('memory'),
-      }, t('memory')));
-    }
 
     function draftOf(snapshot) {
       const value = snapshot.value?.embedding;
@@ -133,31 +127,39 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState('');
       const generation = React.useRef(0);
+      const currentStatus = status?.sessionId === sessionId ? status : null;
       async function load(maintain = false) {
         const current = ++generation.current;
         setBusy(true); setError('');
         try {
           if (maintain) await executeCommand(sessionId, 'suzu-memory-maintain');
           const value = await executeCommand(sessionId, 'suzu-memory-status');
-          if (current === generation.current) setStatus(value);
+          if (current === generation.current) setStatus({ ...value, sessionId });
         } catch { if (current === generation.current) setError('failed'); }
         finally { if (current === generation.current) setBusy(false); }
       }
       React.useEffect(() => {
-        setStatus(null); void load();
+        setStatus(null); setBusy(false); setError('');
+        if (sessionId) void load();
         return () => { generation.current++; };
       }, [sessionId]);
       return h('div', { className: 'suzu-memory' }, style(), h('section', null,
         h('h2', null, t('status')),
-        h('p', { role: 'status' }, status ? t(status.processing ? 'processing' : status.pending ? 'pending' : 'ready') : t('loading')),
-        status?.error && h('p', { role: 'alert' }, t('error')),
+        h('p', { role: 'status' }, !sessionId ? t('noSession')
+          : currentStatus ? t(currentStatus.processing ? 'processing' : currentStatus.pending ? 'pending' : 'ready') : t('loading')),
+        currentStatus?.error && h('p', { role: 'alert' }, t('error')),
         error && h('p', { role: 'alert' }, t(error)),
         h('div', { className: 'suzu-memory-actions' },
-          status?.consoleUrl && h('a', { href: status.consoleUrl, target: '_blank', rel: 'noopener noreferrer' }, t('review')),
-          h('button', { type: 'button', onClick: () => { void load(); }, disabled: busy }, t('refresh')),
-          h('button', { type: 'button', onClick: () => { void load(true); }, disabled: busy }, t(busy ? 'working' : 'maintain'))),
-        status && !status.consoleUrl && h('p', null, t('noConsole'))),
+          currentStatus?.consoleUrl && h('a', { href: currentStatus.consoleUrl, target: '_blank', rel: 'noopener noreferrer' }, t('review')),
+          h('button', { type: 'button', onClick: () => { void load(); }, disabled: busy || !sessionId }, t('refresh')),
+          h('button', { type: 'button', onClick: () => { void load(true); }, disabled: busy || !sessionId }, t(busy ? 'working' : 'maintain'))),
+        currentStatus && !currentStatus.consoleUrl && h('p', null, t('noConsole'))),
         h(EmbeddingForm, { t, settingsForm }));
+    }
+
+    function MemorySettingsPage(props) {
+      const sessionId = props.useSelectedSession(value => value);
+      return h(MemoryPanel, { ...props, sessionId });
     }
 
     function SettingsPage(props) {
@@ -166,7 +168,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'sidebarRight', 'sidebarRightTabs', 'configForms', 'remote', 'remote.commands'],
+      inject: ['slots', 'locale', 'sidebarRight', 'configForms', 'remote', 'remote.commands'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }));
         const t = ctx.locale.bind(NS);
@@ -176,16 +178,10 @@ window.__ModuleLoader__.load({
           if (!response.ok || response.value?.result.kind !== 'success') throw new Error('Memory operation failed');
           return JSON.parse(response.value.result.text);
         };
-        ctx.effect(() => ctx.sidebarRightTabs.register({ id: TAB, kind: 'suzu-memory',
-          title: () => t('title'), guide: [{ id: 'memory', order: 60, title: () => t('title'), description: () => t('description') }] }));
-        ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
-          name: 'conversation.input.left', id: TAB, order: 60, locale: NS,
-          inject: () => ({ openMemory: () => ctx.sidebarRight.openTab('suzu-memory') }),
-        }, MemoryButton));
-        ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-          name: 'sidebar.right.pane.tab', key: TAB, locale: NS,
-          inject: () => ({ settingsForm, executeCommand }),
-        }, MemoryPanel));
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section', id: TAB, order: 25, label: () => t('title'), locale: NS,
+          inject: () => ({ settingsForm, executeCommand, hooks: { selectedSession: ctx.sidebarRight.mounted } }),
+        }, MemorySettingsPage));
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config', key: TAB, locale: NS, inject: () => ({ settingsForm }),
         }, SettingsPage));

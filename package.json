@@ -1,6 +1,6 @@
 {
   "name": "dsh-suzu-memory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Suzu Memory integration for DeepSeek Harness sessions",
   "type": "module",
   "license": "Apache-2.0",
@@ -33,7 +33,6 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-plugin-manager"
