@@ -18,6 +18,13 @@ window.__ModuleLoader__.load({
       unavailable: '当前无法修改配置。', invalid: '请填写 HTTP(S) 地址、模型名称和有效的正整数维度。',
       reload: '重新载入配置', noConsole: '审核台未启用。', error: '整理未完成',
       noSession: '先选择一个会话，即可在这里管理它的记忆。',
+      conversation: '会话', chooseSession: '请选择会话', sessionLoading: '正在读取会话列表…',
+      persona: '人设', personaDsh: '沿用 DSH 人设', personaCustom: '使用本会话人设',
+      personaText: '人设内容', personaHint: '描述身份、性格、说话方式和关系设定。',
+      compaction: '压缩提示词', compactDsh: '沿用 DSH 原模板', compactChat: '聊天模板', compactCustom: '自定义',
+      compactText: '压缩提示词内容', promptSaved: '已保存。人设从下一次模型请求生效，压缩设置用于下一次压缩。',
+      promptHint: '人设和压缩设置仅用于上方选中的会话。', promptInvalid: '请填写启用的自定义提示词，最长 32000 字符。',
+      unsaved: '有未保存的修改，请先保存或重新载入，再切换会话。',
     };
     const en = {
       title: 'Suzu Memory', description: 'Manage memory and the embedding model.',
@@ -32,6 +39,14 @@ window.__ModuleLoader__.load({
       unavailable: 'Settings cannot be edited right now.', invalid: 'Enter an HTTP(S) URL, a model name, and valid positive integer dimensions.',
       reload: 'Reload settings', noConsole: 'The memory console is disabled.', error: 'Processing did not finish',
       noSession: 'Select a conversation to manage its memory here.',
+      conversation: 'Conversation', chooseSession: 'Select a conversation', sessionLoading: 'Loading conversations…',
+      persona: 'Persona', personaDsh: 'Use DSH persona', personaCustom: 'Use this conversation’s persona',
+      personaText: 'Persona text', personaHint: 'Describe identity, personality, speaking style, and relationship.',
+      compaction: 'Compaction prompt', compactDsh: 'Use DSH template', compactChat: 'Chat template', compactCustom: 'Custom',
+      compactText: 'Compaction prompt text', promptSaved: 'Saved. Persona applies to the next model request; compaction settings apply to the next compaction.',
+      promptHint: 'Persona and compaction settings apply only to the conversation selected above.',
+      promptInvalid: 'Enter each enabled custom prompt, up to 32,000 characters.',
+      unsaved: 'Save or reload your changes before switching conversations.',
     };
     const css = `
       .suzu-memory {color:var(--dsw-alias-label-primary);font:inherit;padding:20px;overflow:auto;height:100%;box-sizing:border-box;}
@@ -40,7 +55,8 @@ window.__ModuleLoader__.load({
       .suzu-memory section+section {border-top:1px solid var(--dsw-alias-border-l3);margin-top:24px;padding-top:24px;}
       .suzu-memory p {color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.6;margin:8px 0;overflow-wrap:anywhere;}
       .suzu-memory label {display:grid;gap:6px;font-size:13px;margin:14px 0;}
-      .suzu-memory input:not([type=checkbox]) {font:inherit;width:100%;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:9px 11px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);}
+      .suzu-memory input:not([type=checkbox]),.suzu-memory select,.suzu-memory textarea {font:inherit;width:100%;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:9px 11px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);}
+      .suzu-memory textarea {resize:vertical;min-height:140px;line-height:1.6;}
       .suzu-memory .suzu-check {display:flex;align-items:center;gap:8px;}
       .suzu-memory fieldset {border:0;padding:0;margin:0;min-width:0;}
       .suzu-memory button,.suzu-memory a {font:inherit;font-size:13px;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:7px 11px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer;text-decoration:none;}
@@ -122,7 +138,80 @@ window.__ModuleLoader__.load({
         message && h('p', { role: message === 'saved' ? 'status' : 'alert', className: 'suzu-memory-message' }, t(message)));
     }
 
-    function MemoryPanel({ t, sessionId, executeCommand, settingsForm }) {
+    function PromptForm({ t, sessionId, executeCommand, onEditing }) {
+      const [snapshot, setSnapshot] = React.useState(null);
+      const [draft, setDraft] = React.useState(null);
+      const [template, setTemplate] = React.useState('');
+      const [dirty, setDirty] = React.useState(false);
+      const [saving, setSaving] = React.useState(false);
+      const [message, setMessage] = React.useState('');
+      const generation = React.useRef(0);
+      const valueOf = value => ({ personaMode: value.personaMode, persona: value.persona,
+        compactionMode: value.compactionMode, compactionPrompt: value.compactionPrompt });
+      React.useEffect(() => {
+        onEditing(dirty || saving);
+        return () => onEditing(false);
+      }, [dirty, saving, onEditing]);
+      React.useEffect(() => {
+        const current = ++generation.current;
+        if (sessionId) void executeCommand(sessionId, 'suzu-memory-prompts').then(result => {
+          if (current !== generation.current) return;
+          setSnapshot(result.value); setDraft(valueOf(result.value)); setTemplate(result.chatTemplate);
+        }).catch(() => { if (current === generation.current) setMessage('failed'); });
+        return () => { generation.current++; };
+      }, [sessionId]);
+      const change = (key, value) => { setDraft(old => ({ ...old, [key]: value })); setDirty(true); setMessage(''); };
+      async function save(event) {
+        event.preventDefault();
+        if (!draft || !snapshot || !sessionId) return;
+        if ((draft.personaMode === 'custom' && !draft.persona.trim())
+          || (draft.compactionMode === 'custom' && !draft.compactionPrompt.trim())
+          || draft.persona.length > 32000 || draft.compactionPrompt.length > 32000) { setMessage('promptInvalid'); return; }
+        const current = generation.current;
+        setSaving(true); setMessage('');
+        try {
+          const result = await executeCommand(sessionId, 'suzu-memory-save-prompts', { value: draft, revision: snapshot.revision });
+          if (current !== generation.current) return;
+          if (result.saved) { setSnapshot(result.value); setDraft(valueOf(result.value)); setDirty(false); setMessage('promptSaved'); }
+          else setMessage('conflict');
+        } catch { if (current === generation.current) setMessage('failed'); }
+        finally { if (current === generation.current) setSaving(false); }
+      }
+      async function reload() {
+        const current = generation.current;
+        setSaving(true);
+        try {
+          const result = await executeCommand(sessionId, 'suzu-memory-prompts');
+          if (current !== generation.current) return;
+          setSnapshot(result.value); setDraft(valueOf(result.value)); setDirty(false); setMessage('');
+        } catch { if (current === generation.current) setMessage('failed'); }
+        finally { if (current === generation.current) setSaving(false); }
+      }
+      function mode(key, label, choices) {
+        return h('label', null, t(label), h('select', { disabled: !draft, value: draft?.[key] || 'dsh',
+          onChange: event => {
+            if (key === 'compactionMode' && event.target.value === 'custom' && draft.compactionMode === 'chat') {
+              setDraft(old => ({ ...old, compactionMode: 'custom', compactionPrompt: template })); setDirty(true); setMessage('');
+            } else change(key, event.target.value);
+          } }, choices.map(([value, text]) => h('option', { key: value, value }, t(text)))));
+      }
+      return h('section', null, h('h2', null, t('persona')), h('p', null, t('promptHint')),
+        h('form', { onSubmit: save }, h('fieldset', { disabled: saving || !sessionId },
+          mode('personaMode', 'persona', [['dsh', 'personaDsh'], ['custom', 'personaCustom']]),
+          draft?.personaMode === 'custom' && h('label', null, t('personaText'), h('textarea', {
+            value: draft.persona, maxLength: 32000, placeholder: t('personaHint'), onChange: event => change('persona', event.target.value) })),
+          mode('compactionMode', 'compaction', [['dsh', 'compactDsh'], ['chat', 'compactChat'], ['custom', 'compactCustom']]),
+          draft && draft.compactionMode !== 'dsh' && h('label', null, t('compactText'), h('textarea', {
+            value: draft.compactionMode === 'chat' ? template : draft.compactionPrompt, readOnly: draft.compactionMode === 'chat',
+            maxLength: 32000, onChange: event => change('compactionPrompt', event.target.value) })),
+          h('div', { className: 'suzu-memory-actions' },
+            h('button', { type: 'submit', disabled: !dirty || saving }, t(saving ? 'saving' : 'save')),
+            h('button', { type: 'button', disabled: saving, onClick: () => { void reload(); } }, t('reload'))))),
+        sessionId && !draft && !message && h('p', { role: 'status' }, t('loading')),
+        message && h('p', { role: message === 'promptSaved' ? 'status' : 'alert' }, t(message)));
+    }
+
+    function MemoryPanel({ t, sessionId, executeCommand, settingsForm, children, onEditing }) {
       const [status, setStatus] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState('');
@@ -143,7 +232,7 @@ window.__ModuleLoader__.load({
         if (sessionId) void load();
         return () => { generation.current++; };
       }, [sessionId]);
-      return h('div', { className: 'suzu-memory' }, style(), h('section', null,
+      return h('div', { className: 'suzu-memory' }, style(), children, h('section', null,
         h('h2', null, t('status')),
         h('p', { role: 'status' }, !sessionId ? t('noSession')
           : currentStatus ? t(currentStatus.processing ? 'processing' : currentStatus.pending ? 'pending' : 'ready') : t('loading')),
@@ -154,12 +243,27 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', onClick: () => { void load(); }, disabled: busy || !sessionId }, t('refresh')),
           h('button', { type: 'button', onClick: () => { void load(true); }, disabled: busy || !sessionId }, t(busy ? 'working' : 'maintain'))),
         currentStatus && !currentStatus.consoleUrl && h('p', null, t('noConsole'))),
+        h(PromptForm, { key: sessionId || 'none', t, sessionId, executeCommand, onEditing }),
         h(EmbeddingForm, { t, settingsForm }));
     }
 
     function MemorySettingsPage(props) {
-      const sessionId = props.useSelectedSession(value => value);
-      return h(MemoryPanel, { ...props, sessionId });
+      const activeId = props.useSelectedSession(value => value);
+      const sessions = props.useMemorySessions(value => value);
+      const [selection, setSelection] = React.useState(activeId || '');
+      const [editing, setEditing] = React.useState(false);
+      const sessionId = selection;
+      React.useEffect(() => { if (!selection && activeId && !editing) setSelection(activeId); }, [activeId, selection, editing]);
+      const onEditing = React.useCallback(value => setEditing(value), []);
+      const ids = sessions.ids || [];
+      const available = sessionId && ids.includes(sessionId);
+      return h(MemoryPanel, { ...props, sessionId: available ? sessionId : '', onEditing },
+        h('section', null, h('label', null, props.t('conversation'), h('select', {
+          value: available ? sessionId : '', disabled: editing || sessions.phase === 'pending',
+          onChange: event => setSelection(event.target.value),
+        }, h('option', { value: '', disabled: true }, props.t(sessions.phase === 'pending' ? 'sessionLoading' : 'chooseSession')),
+        ids.map(id => h('option', { key: id, value: id }, sessions.byId[id]?.displayTitle || id)))),
+        editing && h('p', { role: 'status' }, props.t('unsaved'))));
     }
 
     function SettingsPage(props) {
@@ -168,19 +272,19 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'sidebarRight', 'configForms', 'remote', 'remote.commands'],
+      inject: ['slots', 'locale', 'sidebarRight', 'configForms', 'sessions', 'remote', 'remote.commands'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }));
         const t = ctx.locale.bind(NS);
         const settingsForm = ctx.configForms.get('suzu-memory');
-        const executeCommand = async (sessionId, name) => {
-          const response = await ctx.remote.commands.execute(sessionId, `/${name}`, []);
+        const executeCommand = async (sessionId, name, payload) => {
+          const response = await ctx.remote.commands.execute(sessionId, `/${name}${payload === undefined ? '' : ' ' + JSON.stringify(payload)}`, []);
           if (!response.ok || response.value?.result.kind !== 'success') throw new Error('Memory operation failed');
           return JSON.parse(response.value.result.text);
         };
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section', id: TAB, order: 25, label: () => t('title'), locale: NS,
-          inject: () => ({ settingsForm, executeCommand, hooks: { selectedSession: ctx.sidebarRight.mounted } }),
+          inject: () => ({ settingsForm, executeCommand, hooks: { selectedSession: ctx.sidebarRight.mounted, memorySessions: ctx.sessions.list } }),
         }, MemorySettingsPage));
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config', key: TAB, locale: NS, inject: () => ({ settingsForm }),

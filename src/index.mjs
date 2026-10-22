@@ -2,6 +2,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { resolveConfig } from './config.mjs';
 import { DshMemoryRuntime } from './runtime.mjs';
 import { sourceScope } from './events.mjs';
+import { SessionPrompts, CHAT_COMPACTION_PROMPT } from './session-prompts.mjs';
+import { installCompactionPrompts } from './compaction.mjs';
 
 export { Config } from './config.mjs';
 export const name = 'suzu-memory';
@@ -38,6 +40,8 @@ function boundedResult(result, limit) {
 export function apply(ctx, input) {
   const config = resolveConfig(input, ctx.get('profileContext'));
   const runtime = new DshMemoryRuntime(ctx, config);
+  const prompts = new SessionPrompts(ctx, config.dataRoot);
+  installCompactionPrompts(ctx, prompts);
   ctx.effect(() => () => runtime.close());
   ctx.on('agent/created', ({ agent }) => { runtime.consume(agent.session); });
   ctx.on('session/event', session => runtime.observe(session));
@@ -45,6 +49,19 @@ export function apply(ctx, input) {
   ctx.on('session/disposed', session => { void runtime.release(session).catch(error => runtime.report(error)); });
   ctx.on('loader/volatile-update', () => runtime.refreshEmbedding());
   ctx.inject(['commands'], ctx => {
+    ctx.commands.register({ name: 'suzu-memory-prompts', description: '读取本会话的人设与压缩设置。', recordInput: false,
+      handler({ agent }) {
+        return { kind: 'success', text: JSON.stringify({ value: prompts.read(agent.session.id), chatTemplate: CHAT_COMPACTION_PROMPT }) };
+      },
+    });
+    ctx.commands.register({ name: 'suzu-memory-save-prompts', description: '保存本会话的人设与压缩设置。',
+      input: { hint: '会话提示词配置' }, recordInput: false,
+      async handler({ agent, rawInput, signal }) {
+        const { value, revision } = JSON.parse(rawInput);
+        const result = await prompts.save(agent.session.id, value, revision, signal);
+        return { kind: 'success', text: JSON.stringify(result) };
+      },
+    });
     ctx.commands.register({ name: 'suzu-memory-status', description: '查看记忆状态与审核台。',
       async handler({ agent }) {
         const { entry } = runtime.consume(agent.session);
