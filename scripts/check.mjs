@@ -4,6 +4,6 @@ import { execFileSync } from 'node:child_process';
 
 for (const directory of ['src', 'scripts', 'test']) {
   for (const item of readdirSync(directory, { recursive: true, withFileTypes: true })) {
-    if (item.isFile() && item.name.endsWith('.mjs')) execFileSync(process.execPath, ['--check', join(item.parentPath, item.name)], { stdio: 'inherit' });
+    if (item.isFile() && /\.(mjs|js)$/u.test(item.name)) execFileSync(process.execPath, ['--check', join(item.parentPath, item.name)], { stdio: 'inherit' });
   }
 }

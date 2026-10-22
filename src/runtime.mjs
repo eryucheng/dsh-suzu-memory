@@ -4,6 +4,7 @@ import { createOpenAiCompatibleEmbeddingProvider } from '@suzu-memory/providers'
 import { createMemoryHttpServer } from '@suzu-memory/server';
 import { memoryEvent, sessionMemoryId, sourceScope } from './events.mjs';
 import { createDshGenerator } from './generator.mjs';
+import { embeddingConfig } from './config.mjs';
 
 /** Owns adapters only for live DSH sessions. The Memory service owns all memory data. */
 export class DshMemoryRuntime {
@@ -14,16 +15,44 @@ export class DshMemoryRuntime {
     this.closing = false;
     this.closures = new Set();
     this.embedding = null;
-    if (config.embedding) {
-      const { apiKeyEnv, ...embedding } = config.embedding;
-      const apiKey = embedding.apiKey || (apiKeyEnv ? process.env[apiKeyEnv] : '');
-      if (!apiKey) throw new Error('请配置 Embedding API Key 或 apiKeyEnv。');
-      this.embedding = createOpenAiCompatibleEmbeddingProvider({ ...embedding, apiKey });
+    this.refreshEmbedding();
+  }
+
+  refreshEmbedding() {
+    const config = embeddingConfig(this.config);
+    if (config === this.embeddingConfiguration) return;
+    const embedding = config && config.enabled !== false ? createOpenAiCompatibleEmbeddingProvider(config) : null;
+    this.embeddingConfiguration = config;
+    this.embedding = embedding;
+    for (const entry of this.sessions.values()) {
+      entry.memory = this.memoryService(entry.session, entry.identity, entry.generator, this.sessionEmbedding(entry.controller));
     }
+  }
+
+  sessionEmbedding(controller) {
+    const provider = this.embedding;
+    if (!provider) return null;
+    const optionsFor = (options = {}) => ({ ...options,
+      signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal });
+    const embedding = Object.assign((text, options) => provider(text, optionsFor(options)), {
+      model: provider.model, dimensions: provider.dimensions,
+      embedMany: (texts, options) => provider.embedMany(texts, optionsFor(options)),
+    });
+    return embedding;
+  }
+
+  memoryService(session, identity, generator, embedding) {
+    return createMemoryService({
+      dataRoot: this.config.dataRoot, agentId: sessionMemoryId(session.id),
+      defaults: { primaryUserId: identity.userId, userName: identity.userName,
+        memoryOwner: identity.memoryOwner, companionId: sessionMemoryId(session.id) },
+      providers: { generator, structureGenerator: generator, retrievalContextGenerator: generator, embedding },
+    });
   }
 
   require(session) {
     if (this.closing) throw new Error('记忆插件正在退出。');
+    this.refreshEmbedding();
     let entry = this.sessions.get(session.id);
     if (entry) {
       if (entry.session !== session) throw new Error('同一会话身份同时绑定了不同的运行实例。');
@@ -46,17 +75,8 @@ export class DshMemoryRuntime {
       maxTokens: this.config.analysisMaxTokens,
       maximumOutputCharacters: this.config.maximumOutputCharacters,
     });
-    const embedding = this.embedding && Object.assign((text, options = {}) => this.embedding(text, {
-      ...options, signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
-    }), { model: this.embedding.model, dimensions: this.embedding.dimensions });
-    if (embedding) embedding.embedMany = (texts, options = {}) => this.embedding.embedMany(texts, {
-      ...options, signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
-    });
-    const memory = createMemoryService({
-      dataRoot: this.config.dataRoot, agentId,
-      defaults: { primaryUserId: identity.userId, userName: identity.userName, memoryOwner: identity.memoryOwner, companionId: agentId },
-      providers: { generator, structureGenerator: generator, retrievalContextGenerator: generator, embedding },
-    });
+    const embedding = this.sessionEmbedding(controller);
+    const memory = this.memoryService(session, identity, generator, embedding);
     memory.initialize();
     memory.recoverProcessingEvents();
     memory.recoverRunningMaintenance();
@@ -152,6 +172,7 @@ export class DshMemoryRuntime {
     if (entry.console) return entry.console.url;
     entry.consoleStarting = (async () => {
       const service = Object.create(entry.memory);
+      Object.defineProperty(service, 'providers', { get: () => entry.memory.providers });
       service.withRepository = (callback, options = {}) => entry.memory.withRepository(callback, {
         ...options, sourceScope: sourceScope(entry.session),
         signal: options.signal ? AbortSignal.any([entry.controller.signal, options.signal]) : entry.controller.signal,

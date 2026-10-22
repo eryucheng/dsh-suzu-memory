@@ -7,6 +7,7 @@ import LlmRuntime, { LlmAdapter, createUserMessage, createAssistantMessage } fro
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 import ToolRuntime from '@deepseek-ai/dsh-tools';
+import Commands from '@deepseek-ai/dsh-commands';
 import { resolveConfig } from '../src/config.mjs';
 
 export function temporary(t) {
@@ -36,6 +37,7 @@ export async function host(t, script = () => textChunks('{"memories":[]}')) {
   await ctx.plugin(SessionStore);
   await ctx.plugin(SystemPrompt);
   await ctx.plugin(ToolRuntime);
+  await ctx.plugin(Commands);
   const adapter = new ScriptAdapter(script);
   ctx.llm.registerAdapter(['test'], adapter);
   return { ctx, adapter };

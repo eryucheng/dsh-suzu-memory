@@ -8,10 +8,10 @@
 
 当前适配 DSH **0.2.1-rc.2**，需要 Node.js **22.19+（22 系列）或 24+**。安装包已包含固定版本的 Suzu Memory 核心和提示词资源。
 
-在 DSH 的插件页面安装本地 `dsh-suzu-memory-0.1.0.tgz`。使用命令行时，按实际使用的配置选择 `web` 或 `desktop`：
+在 DSH 的插件页面安装本地 `dsh-suzu-memory-0.2.0.tgz`。使用命令行时，按实际使用的配置选择 `web` 或 `desktop`：
 
 ```powershell
-dsh plugin --profile web add "D:/Apps/AI/dsh-suzu-memory/dist/dsh-suzu-memory-0.1.0.tgz"
+dsh plugin --profile web add "D:/Apps/AI/dsh-suzu-memory/dist/dsh-suzu-memory-0.2.0.tgz"
 ```
 
 桌面版的命令行安装遵循 DSH 自身要求：先完成桌面版初始化，退出桌面版后对 `desktop` 配置执行安装。插件不会自动打开浏览器或桌面窗口。
@@ -25,16 +25,18 @@ dsh plugin --profile web add "D:/Apps/AI/dsh-suzu-memory/dist/dsh-suzu-memory-0.
 | 工具 | 用途 |
 | --- | --- |
 | `suzu_memory_search` | 查询当前会话的长期记忆，支持候选数和记忆 ID 关联续查。 |
-| `suzu_memory_status` | 查看当前会话的处理状态与审核台地址。 |
-| `suzu_memory_maintain` | 请求整理当前会话的经历，或重试未完成的维护。 |
 
-可对 DSH 说“查看当前会话的记忆状态”，让它调用状态工具。返回的本地审核台复用 Memory 原有页面，可以核对候选与原话证据、进行人工审核、查看处理状态及创建备份。审核台按需启动，监听本机随机端口，随会话退出或插件卸载关闭。
+选择会话后，点击输入框旁的 **记忆** 按钮，打开 DSH 右侧的 Suzu Memory 面板。面板提供当前会话的处理状态、刷新、立即整理和 **打开记忆审核台**。审核台复用 Memory 原有页面，可以核对候选与原话证据、进行人工审核、查看处理状态及创建备份。审核台按需启动，监听本机随机端口，随会话退出或插件卸载关闭。
+
+面板下方可填写 Embedding 的 API 地址、模型名称、向量维度和 API Key；插件详情页也提供同一份配置表单。保存后，下一次检索和整理使用新配置，正在运行的请求保持原配置。维度可留空，API Key 留空保留已保存的密钥；关闭向量检索保留配置。配置作用于当前 DSH profile，记忆数据按会话分别保存。并发修改被拒绝时，页面保留草稿并提示重新载入。
+
+聊天模型只收到 `suzu_memory_search` 的工具说明与参数，没有额外的记忆系统提示词。状态、面板地址和手动整理通过 DSH 界面命令处理，不进入模型的工具列表。终端也可使用 `/suzu-memory-status` 和 `/suzu-memory-maintain`。
 
 插件只收录会话中实际提交的普通用户文本和助手可见文本。技能注入、工具结果、推理内容和失败的模型尝试不作为普通聊天归档。中断后已经提交的助手文本保留中断标记。分支会话从自己的日志区间建立记忆，不读取父会话的记忆库。
 
 ## 配置
 
-配置通过 DSH 原生插件配置保存。以下为配置覆盖示例，可放入当前配置的 `cordis.patch.yml`：
+Embedding 表单通过 DSH 原生配置接口保存，API Key 使用秘密字段，不会随配置读取返回浏览器。以下为配置覆盖示例，可放入当前配置的 `cordis.patch.yml`：
 
 ```yaml
 - id: suzu-memory
@@ -53,7 +55,7 @@ dsh plugin --profile web add "D:/Apps/AI/dsh-suzu-memory/dist/dsh-suzu-memory-0.
 | `analysisProvider`、`analysisModel` | 同时留空，沿用当前会话的模型；指定时必须同时填写 DSH 已注册的提供者和模型。 |
 | `memoryOwner`、`userName` | 分析材料中的称呼，默认 `Assistant`、`User`。 |
 | `automaticMaintenance` | 默认开启，在会话空闲后整理待处理材料。 |
-| `consoleEnabled` | 默认开启；状态工具请求审核台时才监听端口。 |
+| `consoleEnabled` | 默认开启；打开记忆面板、刷新状态或执行状态命令时才按需监听端口。 |
 | `embedding` | 默认为空。配置后使用 Memory 现有向量能力；未配置时仍可使用词法、BM25、实体与关系检索。 |
 
 向量模型单独配置；DSH 的聊天模型通道不提供此插件所需的 Embedding 接口。示例：
@@ -72,7 +74,7 @@ dsh plugin --profile web add "D:/Apps/AI/dsh-suzu-memory/dist/dsh-suzu-memory-0.
 
 记忆与原始证据保存在本地。后台分析会把所需材料发送给 DSH 中选择的模型提供者；配置向量模型后，向量化材料也会发送给相应提供者。
 
-关闭插件会停止采集并取消其在途任务，已有数据保留。卸载插件保留数据。DSH 会话列表的删除操作目前未联动删除 Memory 数据；状态工具可定位该会话独立的数据目录，关闭 DSH 后由用户管理该目录。插件不修改 DSH 原始会话日志。
+关闭插件会停止采集并取消其在途任务，已有数据保留。卸载插件保留数据。DSH 会话列表的删除操作目前未联动删除 Memory 数据；状态命令可定位该会话独立的数据目录，关闭 DSH 后由用户管理该目录。插件只向 DSH 日志追加原生命令的执行记录，不改写已有对话。
 
 ## 开发
 

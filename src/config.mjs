@@ -21,22 +21,28 @@ export const Config = z.object({
   recallMaximumCharacters: z.number().step(1).min(1000).max(48000).default(12000),
   consoleEnabled: z.boolean().default(true),
   embedding: z.union([z.const(null), z.object({
-    baseUrl: z.string().required(),
-    model: z.string().required(),
+    enabled: z.boolean().default(true),
+    baseUrl: z.string().pattern(/^https?:\/\/\S+$/u).required(),
+    model: z.string().pattern(/\S/u).required(),
     apiKey: z.string().role('secret'),
     apiKeyEnv: z.string(),
     dimensions: z.number().step(1).min(1),
     timeoutMs: z.number().step(1).min(1000).max(600000).default(30000),
-  })]).default(null),
+  })]).default(null).volatile(),
 });
 
+export function embeddingConfig(config) {
+  return typeof config.embedding?.get === 'function' ? config.embedding.get() : config.embedding;
+}
+
 export function resolveConfig(input, profileContext) {
-  const config = Config(input);
+  const config = Config(input ? { ...input, embedding: embeddingConfig(input) } : input);
   if (Boolean(config.analysisProvider) !== Boolean(config.analysisModel)) {
     throw new Error('analysisProvider 和 analysisModel 必须同时填写，或同时留空。');
   }
   return {
     ...config,
+    embedding: typeof input?.embedding?.get === 'function' ? input.embedding : embeddingConfig(config),
     dataRoot: path.resolve(config.dataRoot || path.join(profileContext?.dir || path.join(os.homedir(), '.dsh'), 'suzu-memory')),
   };
 }

@@ -5,9 +5,7 @@ import { sourceScope } from './events.mjs';
 
 export { Config } from './config.mjs';
 export const name = 'suzu-memory';
-export const inject = ['llm', 'tools', 'sessions', 'systemPrompt'];
-
-const GUIDANCE = `当前会话启用了 Suzu Memory 长期记忆。需要以前交流过的细节、经历或原话时，调用 suzu_memory_search；可以改写查询，或用已返回的记忆 ID 继续查关联。结果是历史材料，结合时间、来源和当前对话使用。没有找到不等于从未发生。记忆只属于当前会话。聊天内容由宿主记录和整理，无需为写入记忆编造事件。suzu_memory_status 可查看状态和审核台地址，suzu_memory_maintain 可请求整理或重试。`;
+export const inject = ['llm', 'tools', 'sessions'];
 
 function sessionOf(exec) {
   if (!exec.agent) throw new Error('Suzu Memory 工具必须在 DSH 会话中执行。');
@@ -45,10 +43,26 @@ export function apply(ctx, input) {
   ctx.on('session/event', session => runtime.observe(session));
   ctx.on('agent/status', ({ agent, status }) => { if (status === 'idle') runtime.idle(agent.session); });
   ctx.on('session/disposed', session => { void runtime.release(session).catch(error => runtime.report(error)); });
-  ctx.systemPrompt.section({ name: 'suzu-memory:recall', order: 85, text: GUIDANCE, interpolate: false });
+  ctx.on('loader/volatile-update', () => runtime.refreshEmbedding());
+  ctx.inject(['commands'], ctx => {
+    ctx.commands.register({ name: 'suzu-memory-status', description: '查看记忆状态与审核台。',
+      async handler({ agent }) {
+        const { entry } = runtime.consume(agent.session);
+        return { kind: 'success', text: JSON.stringify({ processing: Boolean(entry.running),
+          pending: entry.cursor.maintenancePending, error: entry.error,
+          status: entry.memory.managementStatus(), consoleUrl: await runtime.consoleUrl(entry) }) };
+      },
+    });
+    ctx.commands.register({ name: 'suzu-memory-maintain', description: '整理当前会话的记忆。',
+      async handler({ agent, signal }) {
+        const result = await waitForTask(runtime.maintain(agent.session, { force: true }), signal);
+        return { kind: 'success', text: JSON.stringify({ status: result.status }) };
+      },
+    });
+  });
   ctx.tools.register(defineTool({
     name: 'suzu_memory_search',
-    description: '回想当前会话的长期记忆，可沿已返回的记忆 ID 查询关联、后续和原话。',
+    description: '需要回想此前交流过的人、事或原话时，检索长期记忆。可用返回的记忆 ID 继续查关联。',
     parameters: {
       query: { type: 'string', required: true, description: '结合当前对话明确需要回想的人、事或时间。' },
       limit: { type: 'number', description: '返回候选数，1—10。' },
@@ -74,23 +88,6 @@ export function apply(ctx, input) {
         signal: AbortSignal.any([exec.signal, entry.controller.signal]),
       });
       return visible.text;
-    },
-  }));
-  ctx.tools.register(defineTool({
-    name: 'suzu_memory_status', description: '查看当前会话的记忆处理状态和本地审核台地址。', parameters: {},
-    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
-    async execute(_args, exec) {
-      const { entry } = runtime.consume(sessionOf(exec));
-      return JSON.stringify({ sessionId: entry.session.id, processing: Boolean(entry.running), pending: entry.cursor.maintenancePending, error: entry.error,
-        status: entry.memory.managementStatus(), consoleUrl: await runtime.consoleUrl(entry) });
-    },
-  }));
-  ctx.tools.register(defineTool({
-    name: 'suzu_memory_maintain', description: '整理当前会话已记录的经历，或重试尚未完成的记忆维护。', parameters: {},
-    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
-    async execute(_args, exec) {
-      const result = await waitForTask(runtime.maintain(sessionOf(exec), { force: true }), exec.signal);
-      return JSON.stringify({ status: result.status });
     },
   }));
 }

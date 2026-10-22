@@ -143,3 +143,37 @@ test('the existing review console closes its listening socket with the session',
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   fs.writeFileSync(path.join(runtime.config.dataRoot, 'console-evidence.json'), JSON.stringify({ pid: process.pid, port: Number(url.port), state: 'closed-and-rebound' }));
 });
+
+test('live embedding edits preserve each running provider snapshot and apply to the next operation', async t => {
+  const { ctx } = await host(t);
+  let current = { baseUrl: 'https://embedding.invalid/v1', model: 'fixture-a', dimensions: 2, apiKey: 'fixture-key' };
+  const settings = config(t, { embedding: { get: () => current } });
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    const request = JSON.parse(options.body); requests.push(request);
+    return Response.json({ model: request.model, data: [{ index: 0, embedding: Array(request.dimensions).fill(1) }] });
+  });
+  const runtime = new DshMemoryRuntime(ctx, settings);
+  t.after(() => runtime.close());
+  const value = session();
+  user(value, '用于配置更新检查的虚构消息。');
+  const { entry } = runtime.consume(value);
+  const originalOffset = entry.cursor.nextOffset;
+  const first = entry.memory.providers.embedding;
+  current = { ...current, model: 'fixture-b', dimensions: 3 };
+  runtime.consume(value);
+  const second = entry.memory.providers.embedding;
+  assert.equal(entry.cursor.nextOffset, originalOffset);
+  assert.equal(entry.memory.listInputEvents().total, 1);
+  await first('fictitious text');
+  await second('fictitious text');
+  assert.deepEqual(requests.map(request => [request.model, request.dimensions]), [['fixture-a', 2], ['fixture-b', 3]]);
+  assert.equal(first.model, 'fixture-a');
+  assert.equal(second.model, 'fixture-b');
+  current = { ...current, enabled: false };
+  runtime.consume(value);
+  assert.equal(entry.memory.providers.embedding, null);
+  current = { ...current, enabled: true };
+  runtime.consume(value);
+  assert.equal(entry.memory.providers.embedding.model, 'fixture-b');
+});
