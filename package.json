@@ -1,0 +1,32 @@
+{
+  "name": "dsh-suzu-memory",
+  "version": "0.1.0",
+  "description": "Suzu Memory integration for DeepSeek Harness sessions",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "儿玉诚也",
+  "main": "./src/index.mjs",
+  "exports": { ".": "./src/index.mjs", "./cordis.patch.yml": "./cordis.patch.yml", "./package.json": "./package.json" },
+  "engines": { "node": "^22.19.0 || >=24.0.0", "dsh": "0.2.1-rc.2" },
+  "workspaces": ["vendor/suzu-memory/packages/*"],
+  "files": ["src", "cordis.patch.yml", "UPSTREAM.json", "vendor/suzu-memory/LICENSE"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": { "test": "node --test test/*.test.mjs test/integration/*.test.mjs", "check": "node scripts/check.mjs", "test:integration": "node --test test/integration/*.test.mjs" },
+  "dependencies": {
+    "@suzu-memory/config": "0.1.0",
+    "@suzu-memory/core": "0.1.0",
+    "@suzu-memory/providers": "0.1.0",
+    "@suzu-memory/server": "0.1.0",
+    "@suzu-memory/service": "0.1.0"
+  },
+  "bundledDependencies": ["@suzu-memory/analysis", "@suzu-memory/config", "@suzu-memory/console", "@suzu-memory/core", "@suzu-memory/embedding-indexer", "@suzu-memory/evaluation", "@suzu-memory/extraction", "@suzu-memory/ingestion", "@suzu-memory/maintenance", "@suzu-memory/providers", "@suzu-memory/retriever", "@suzu-memory/runtime", "@suzu-memory/server", "@suzu-memory/service", "@suzu-memory/structurer", "@suzu-memory/usage-ledger", "@suzu-memory/visualization"],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/schemastery": "3.18.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+  },
+  "devDependencies": { "@deepseek-ai/dsh-agent": "0.2.1-rc.2", "@deepseek-ai/dsh-agent-loop": "0.2.1-rc.2", "@deepseek-ai/dsh-session-projection": "0.2.1-rc.2" }
+}

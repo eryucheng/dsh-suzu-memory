@@ -1,0 +1,4 @@
+- insert:
+    - id: suzu-memory
+      name: dsh-suzu-memory
+      config: {}

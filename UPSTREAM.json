@@ -1,0 +1,4 @@
+{
+  "memory": { "repository": "https://github.com/eryucheng/suzu-memory", "commit": "afa21baafef60052afaa15c45e282760de18a852", "directory": "vendor/suzu-memory", "license": "Apache-2.0" },
+  "dsh": { "repository": "https://github.com/deepseek-ai/deepseek-harness", "commit": "687f282e8625c6b8d11ff58211a90524be2e4317", "version": "0.2.1-rc.2" }
+}

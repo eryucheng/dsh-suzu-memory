@@ -1,0 +1,7 @@
+node_modules/
+dist/
+data/
+*.local.json
+*.local.yml
+*.tgz
+.env
