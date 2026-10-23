@@ -1,6 +1,6 @@
 {
   "name": "dsh-suzu-memory",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Suzu Memory integration for DeepSeek Harness sessions",
   "type": "module",
   "license": "Apache-2.0",
@@ -58,7 +58,7 @@
     }
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs test/integration/*.test.mjs",
+    "test": "node --test test/*.test.mjs test/integration/*.test.mjs vendor/suzu-memory/packages/*/test/calendar-time.test.mjs vendor/suzu-memory/packages/retriever/test/temporal-regressions.test.mjs vendor/suzu-memory/packages/service/test/agent-memory-extraction.test.mjs",
     "check": "node scripts/check.mjs",
     "test:integration": "node --test test/integration/*.test.mjs"
   },

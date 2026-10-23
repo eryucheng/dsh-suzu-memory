@@ -93,6 +93,10 @@ export function apply(ctx, input) {
       const { entry } = runtime.consume(sessionOf(exec));
       const result = await entry.memory.search(args.query, {
         anchors: args.anchors || [], persistTrace: false, reactivate: false,
+        queryPerspective: {
+          speakerRole: 'agent', speakerKey: entry.identity.agentId, speakerNames: [entry.identity.memoryOwner],
+          addresseeRole: 'user', addresseeKey: entry.identity.userId, addresseeNames: [entry.identity.userName],
+        },
         sourceScope: sourceScope(entry.session),
         signal: AbortSignal.any([exec.signal, entry.controller.signal]),
         options: { includeCandidateContext: true, maximumReturnedCandidates: args.limit || config.recallLimit,
