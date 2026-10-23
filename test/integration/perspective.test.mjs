@@ -30,6 +30,7 @@ test('DSH memory tool resolves model-authored pronouns and named people against 
     const utterances = memory.listMemories({ kinds: ['utterance'] }).items;
     assert.equal(utterances.length, 2);
     const ids = Object.fromEntries(utterances.map(node => [node.subject_role, node.id]));
+    assert.equal(memory.defaults.retrieval.recallReactivation.enabled, true);
     let sequence = 0;
     for (const [query, role] of [
       ['你喜欢吃火锅吗', 'user'],
@@ -47,6 +48,11 @@ test('DSH memory tool resolves model-authored pronouns and named people against 
       const candidateIds = text.match(/^记忆 ID：(.*)$/mu)?.[1].split('、').filter(Boolean) || [];
       assert.ok(candidateIds.includes(ids[role]), text);
       assert.ok(!candidateIds.includes(ids[role === 'user' ? 'agent' : 'user']), text);
+    });
+    await t.test('displayed recall activates memories with the default service policy', async () => {
+      const states = memory.withRepository(repository => repository.listMemoryRecallReactivationStates(memory.agentId));
+      assert.ok(states.length > 0);
+      assert.ok(states.every(state => state.activation_count > 0));
     });
     await t.test('structured preferences keep the queried holder and reject the other actor', async () => {
       const sources = Object.fromEntries(utterances.map(node => [node.subject_role, memory.getMemory(node.id).sources[0].id]));

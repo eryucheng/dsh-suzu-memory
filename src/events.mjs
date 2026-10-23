@@ -26,7 +26,9 @@ export function memoryEvent(session, event, identity) {
       spaceId: session.id, commitSequence: Number(event.seq) + 1, eventType: event.type,
       sender: { id: user ? identity.userId : identity.agentId, kind: user ? 'local-user' : 'agent', name: user ? identity.userName : identity.memoryOwner },
       topology: { kind: 'direct-user-agent-dm', participants: [{ kind: 'local-user', id: identity.userId }, { kind: 'agent', id: identity.agentId }] },
-      dsh: { sessionId: session.id, messageId: message.id, sequence: Number(event.seq), ...(event.data.interrupted ? { interrupted: true } : {}) },
+      dsh: { sessionId: session.id, messageId: message.id, sequence: Number(event.seq),
+        ...(!user ? { turn: event.data.turn, replyComplete: !event.data.interrupted && !message.content.some(block => block.type === 'tool-call') } : {}),
+        ...(event.data.interrupted ? { interrupted: true } : {}) },
     },
   };
 }

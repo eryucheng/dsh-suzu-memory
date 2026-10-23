@@ -5,8 +5,21 @@ import net from 'node:net';
 import test from 'node:test';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { DshMemoryRuntime } from '../src/runtime.mjs';
+import { resolveConfig } from '../src/config.mjs';
 import { sourceScope } from '../src/events.mjs';
 import { host, config, session, user, assistant, textChunks, eventCandidate } from './helpers.mjs';
+
+test('memory uses the configured timezone and follows the system when it is omitted', async t => {
+  const { ctx } = await host(t);
+  for (const timeZone of ['', 'America/Los_Angeles']) {
+    const runtime = new DshMemoryRuntime(ctx, config(t, { timeZone }));
+    try {
+      const entry = runtime.require(session());
+      assert.equal(entry.memory.defaults.retrieval.timeZone, timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone);
+    } finally { await runtime.close(); }
+  }
+  assert.throws(() => resolveConfig({ timeZone: 'not-a-timezone' }), RangeError);
+});
 
 test('committed conversation text keeps host identities and excludes injected context and failed attempts', async t => {
   const { ctx } = await host(t);

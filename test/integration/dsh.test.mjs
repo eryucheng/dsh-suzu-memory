@@ -11,7 +11,29 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { createMemoryService } from '@suzu-memory/service';
 import * as plugin from '../../src/index.mjs';
 import { sessionMemoryId } from '../../src/events.mjs';
+import { DshMemoryRuntime } from '../../src/runtime.mjs';
 import { host, config, textChunks, eventCandidate } from '../helpers.mjs';
+
+test('a memory storage failure warns while DSH still creates and chats in the session', async t => {
+  const { ctx } = await host(t, () => textChunks('正常回复。'));
+  await ctx.plugin(SessionProjectionRegistry);
+  await ctx.plugin(AgentRegistry);
+  await ctx.plugin(AgentLoop, { agents: [] });
+  const warnings = [];
+  t.mock.method(DshMemoryRuntime.prototype, 'report', error => warnings.push(error));
+  const settings = config(t, { consoleEnabled: false });
+  fs.writeFileSync(path.join(settings.dataRoot, 'agents'), 'blocked memory directory');
+  const fiber = ctx.plugin(plugin, settings);
+  await fiber;
+  const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('memory-storage-fault'),
+    agentOptions: { provider: 'test', model: 'deepseek-test' } });
+  try {
+    assert.ok(warnings.length > 0);
+    handle.agent.followup(createUserMessage({ content: [{ type: 'text', text: '会话仍然可以使用。' }], source: { kind: 'user' } }));
+    await handle.agent.whenIdle();
+    assert.ok(handle.agent.session.snapshotEvents().some(event => event.type === 'assistant/message'));
+  } finally { await handle.dispose(); await fiber.dispose(); }
+});
 
 test('the installed DSH services run conversation, maintenance, recall, and plugin unload', async t => {
   let search = false;
@@ -71,7 +93,7 @@ test('the installed DSH services run conversation, maintenance, recall, and plug
   fs.writeFileSync(path.join(settings.dataRoot, 'console-evidence.json'), JSON.stringify({ pid: process.pid, port: Number(url.port), state: 'closed-and-rebound' }));
 });
 
-test('the normal DSH idle transition starts background Memory maintenance', async t => {
+test('normal DSH short conversations make no analysis calls until explicit maintenance', async t => {
   const { ctx, adapter } = await host(t, options => options.system?.includes('JSON Schema')
     ? textChunks('{"memories":[]}') : textChunks('收到。'));
   await ctx.plugin(SessionProjectionRegistry);
@@ -81,8 +103,52 @@ test('the normal DSH idle transition starts background Memory maintenance', asyn
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('automatic-maintenance'), agentOptions: { provider: 'test', model: 'deepseek-test' } });
   handle.agent.followup(createUserMessage({ content: [{ type: 'text', text: '这是虚构测试对话。' }], source: { kind: 'user' } }));
   await handle.agent.whenIdle();
+  assert.ok(!adapter.calls.some(call => call.system?.includes('JSON Schema')));
   const result = await ctx.commands.execute(handle.agent, '/suzu-memory-maintain', [], new AbortController().signal);
   assert.equal(result.result.kind, 'success', JSON.stringify(result));
   assert.ok(adapter.calls.some(call => call.system?.includes('JSON Schema')));
   await handle.dispose();
+});
+
+test('complete DSH turns schedule length batches while idle notifications do no work', { timeout: 15000 }, async t => {
+  let release, reached;
+  const gate = new Promise(resolve => { release = resolve; });
+  const stopping = new Promise(resolve => { reached = resolve; });
+  const jobs = [];
+  const maintain = DshMemoryRuntime.prototype.maintain;
+  t.mock.method(DshMemoryRuntime.prototype, 'maintain', function (...args) {
+    const work = maintain.apply(this, args); jobs.push(work); return work;
+  });
+  const { ctx, adapter } = await host(t, options => options.system?.includes('JSON Schema')
+    ? textChunks('{"memories":[]}') : textChunks('回复'.padEnd(100, '乙')));
+  await ctx.plugin(SessionProjectionRegistry);
+  await ctx.plugin(AgentRegistry);
+  await ctx.plugin(AgentLoop, { agents: [] });
+  ctx.on('agent/turn-stopping', async ({ turn }) => { if (turn === 3) { reached(); await gate; } });
+  const settings = config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000, consoleEnabled: false });
+  const fiber = ctx.plugin(plugin, settings);
+  await fiber;
+  const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('length-batch-scheduling'),
+    agentOptions: { provider: 'test', model: 'deepseek-test' } });
+  const agent = handle.agent;
+  const memory = createMemoryService({ dataRoot: settings.dataRoot, agentId: sessionMemoryId(agent.id) });
+  const say = n => agent.followup(createUserMessage({ content: [{ type: 'text', text: `${n}用户`.padEnd(400, '甲') }], source: { kind: 'user' } }));
+  const analysisCalls = () => adapter.calls.filter(call => call.system?.includes('JSON Schema'));
+  try {
+    for (let n = 1; n <= 2; n++) { say(n); await agent.whenIdle(); await Promise.all(jobs); }
+    assert.equal(analysisCalls().length, 0);
+    say(3); await stopping;
+    assert.equal(memory.listInputEvents().total, 6);
+    const before = jobs.length;
+    for (let n = 0; n < 10; n++) ctx.emit('agent/status', { agent, status: 'idle' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(jobs.length, before, 'idle notifications never schedule maintenance');
+    assert.equal(analysisCalls().length, 0, 'the following turn has not ended yet');
+    release(); await agent.whenIdle(); await Promise.all(jobs);
+    assert.equal(analysisCalls().length, 1);
+    assert.equal(memory.listInputEvents({ statuses: ['archived'] }).total, 4);
+    assert.equal(memory.listInputEvents().total, 2);
+  } finally {
+    release(); await handle.dispose(); await fiber.dispose(); await Promise.allSettled(jobs); await memory.close();
+  }
 });

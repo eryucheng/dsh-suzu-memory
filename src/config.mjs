@@ -6,12 +6,16 @@ export const Config = z.object({
   dataRoot: z.string().default('').description('记忆数据目录；留空使用当前 DSH 配置目录下的 suzu-memory。'),
   memoryOwner: z.string().default('Assistant'),
   userName: z.string().default('User'),
+  timeZone: z.string().default('').description('记忆使用的时区；留空跟随系统时区，例如 Asia/Shanghai。'),
   analysisProvider: z.string().default('').description('留空沿用当前会话的模型提供者。'),
   analysisModel: z.string().default('').description('留空沿用当前会话的模型。'),
   analysisTimeoutMs: z.number().step(1).min(1000).max(600000).default(180000),
   analysisMaxTokens: z.number().step(1).min(256).max(64000).default(16384),
   maximumOutputCharacters: z.number().step(1).min(1024).max(2000000).default(262144),
-  automaticMaintenance: z.boolean().default(true),
+  automaticMaintenance: z.boolean().default(true).description('累计内容达到批次长度后在后台整理，压缩时处理剩余内容。'),
+  archiveBatchCharacters: z.number().step(1).min(1000).max(48000).default(12000).description('每批正文的目标字符数。'),
+  archiveContextCharacters: z.number().step(1).min(128).max(48000).default(12000).description('前文和后续一轮各自的最大字符数。'),
+  archiveRequestCharacters: z.number().step(1).min(16000).max(200000).default(64000).description('单次抽取请求的总字符上限，包含提示词与前后文。'),
   maximumInputBatches: z.number().step(1).min(1).max(20).default(2),
   maximumMaintenanceTasks: z.number().step(1).min(1).max(100).default(10),
   maximumStateRequests: z.number().step(1).min(1).max(100).default(10),
@@ -37,6 +41,7 @@ export function embeddingConfig(config) {
 
 export function resolveConfig(input, profileContext) {
   const config = Config(input ? { ...input, embedding: embeddingConfig(input) } : input);
+  if (config.timeZone) new Intl.DateTimeFormat('en', { timeZone: config.timeZone });
   if (Boolean(config.analysisProvider) !== Boolean(config.analysisModel)) {
     throw new Error('analysisProvider 和 analysisModel 必须同时填写，或同时留空。');
   }

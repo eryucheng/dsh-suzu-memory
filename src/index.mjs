@@ -43,9 +43,13 @@ export function apply(ctx, input) {
   const prompts = new SessionPrompts(ctx, config.dataRoot);
   installCompactionPrompts(ctx, prompts);
   ctx.effect(() => () => runtime.close());
-  ctx.on('agent/created', ({ agent }) => { runtime.consume(agent.session); });
-  ctx.on('session/event', session => runtime.observe(session));
-  ctx.on('agent/status', ({ agent, status }) => { if (status === 'idle') runtime.idle(agent.session); });
+  ctx.on('agent/created', ({ agent }) => { runtime.observe(agent.session); });
+  ctx.on('session/event', (session, event) => {
+    runtime.observe(session);
+    if (event.type === 'compaction/start' || (event.type === 'user/message'
+      && event.surfaceOp?.op === 'replace' && event.data.source.kind !== 'compact-checkpoint')) runtime.scheduleArchive(session, { flush: true });
+    else if (event.type === 'turn/end' && event.data.reason.kind === 'completed') runtime.scheduleArchive(session);
+  });
   ctx.on('session/disposed', session => { void runtime.release(session).catch(error => runtime.report(error)); });
   ctx.on('loader/volatile-update', () => runtime.refreshEmbedding());
   ctx.inject(['commands'], ctx => {
@@ -66,7 +70,7 @@ export function apply(ctx, input) {
       async handler({ agent }) {
         const { entry } = runtime.consume(agent.session);
         return { kind: 'success', text: JSON.stringify({ processing: Boolean(entry.running),
-          pending: entry.cursor.maintenancePending, error: entry.error,
+          pending: entry.pendingEvents > 0, error: entry.error,
           status: entry.memory.managementStatus(), consoleUrl: await runtime.consoleUrl(entry) }) };
       },
     });

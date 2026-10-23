@@ -10,6 +10,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import * as plugin from '../src/index.mjs';
 import BasicCompactionEngine from '@deepseek-ai/dsh-compaction-basic';
 import { SessionPrompts, CHAT_COMPACTION_PROMPT } from '../src/session-prompts.mjs';
+import { DshMemoryRuntime } from '../src/runtime.mjs';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION } from '@deepseek-ai/dsh-system-prompt';
 import { host, config, textChunks, temporary } from './helpers.mjs';
@@ -57,13 +58,13 @@ test('unload cancels a pending prompt writer and drains its acquisition before r
   assert.deepEqual(fs.readdirSync(store.directory), []);
 });
 
-async function loopHost(t, script) {
+async function loopHost(t, script, overrides = {}) {
   const result = await host(t, script);
   await result.ctx.plugin(SessionProjectionRegistry);
   await result.ctx.plugin(AgentRegistry);
   await result.ctx.plugin(AgentLoop, { agents: [] });
   await result.ctx.plugin(TokenMeter);
-  const fiber = result.ctx.plugin(plugin, config(t));
+  const fiber = result.ctx.plugin(plugin, config(t, overrides));
   await fiber;
   const create = id => result.ctx.agentLoop.createAgent(result.ctx, { sessionId: SessionId(id),
     agentOptions: { provider: 'test', model: 'deepseek-test' } });
@@ -159,4 +160,30 @@ test('unchanged conversations retain the original DSH compaction instruction', a
   await ctx.compaction.summarize({ messages: [] }, handle.agent);
   assert.match(adapter.calls.at(-1).messages.at(-1).content[0].text, /AI coding assistant/);
   await handle.dispose();
+});
+
+test('native compaction flushes a short memory tail without waiting for extraction', async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const jobs = [];
+  const maintain = DshMemoryRuntime.prototype.maintain;
+  t.mock.method(DshMemoryRuntime.prototype, 'maintain', function (...args) {
+    const work = maintain.apply(this, args); jobs.push(work); return work;
+  });
+  const { ctx, adapter, create } = await loopHost(t, async options => {
+    if (options.purpose === 'compaction') return textChunks('保留用户的公园散步计划。');
+    if (options.system?.includes('JSON Schema')) { await gate; return textChunks('{"memories":[]}'); }
+    return textChunks('明白。');
+  }, { automaticMaintenance: true });
+  adapter.resolveModel = async (provider, model) => ({ provider, id: model, name: model, context: { contextWindow: 100000 } });
+  await ctx.plugin(BasicCompactionEngine, { auto: false, headroomTokens: 1000, retainTokens: 0, maxTokens: 1000 });
+  const handle = await create('compact-short-tail');
+  try {
+    await say(handle.agent, '上周在公园散步，约定下周再去。'.repeat(120));
+    assert.equal(jobs.length, 0);
+    const result = await ctx.compaction.compactNow(handle.agent, new AbortController().signal);
+    assert.ok(result);
+    assert.equal(jobs.length, 1);
+    release(); await Promise.all(jobs);
+  } finally { release(); await Promise.allSettled(jobs); await handle.dispose(); }
 });

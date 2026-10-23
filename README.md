@@ -23,7 +23,7 @@
 
 <br>
 
-长对话经过几轮压缩，早先聊过的细节往往只剩一句摘要。**DSH Suzu Memory** 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的插件，它把 [Suzu Memory](https://github.com/eryucheng/suzu-memory) 长期记忆装进 DSH 的会话里：照常聊天就会被收录，会话空闲时自动整理，模型需要回想时自己发起检索，每条记忆都能追溯到当时的原话。
+长对话经过几轮压缩，早先聊过的细节往往只剩一句摘要。**DSH Suzu Memory** 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的插件，它把 [Suzu Memory](https://github.com/eryucheng/suzu-memory) 长期记忆装进 DSH 的会话里：照常聊天，内容积累到一定长度后分批后台整理，压缩时处理剩余内容。模型需要回想时自己发起检索，每条记忆都能追溯到当时的原话。
 
 它还可以接管压缩摘要的写法：摘要只负责接住当前的话题，被压缩掉的细节交给长期记忆保存。
 
@@ -77,7 +77,7 @@
 ## 工作原理
 
 <p align="center">
-  <img src="docs/images/workflow.svg" alt="工作原理：每条消息提交时收录为原话证据，会话空闲时整理成记忆网络。DSH 压缩只把旧消息换成摘要，原话仍在记忆库中；模型需要时通过 suzu_memory_search 检索相关记忆。" width="1120">
+  <img src="docs/images/workflow.svg" alt="工作原理：原文提交时暂存，内容足量后分批整理，压缩时处理尾批。DSH 压缩只把旧消息换成摘要，原话仍在记忆库中；模型需要时通过 suzu_memory_search 检索相关记忆。" width="1120">
 </p>
 
 原话在每条消息提交时就已经进了记忆库，所以压缩只会缩短模型眼前的上下文，记忆库里一条都不会少。压缩摘要和长期记忆各管一段：
@@ -85,7 +85,7 @@
 |  | 压缩摘要 | 长期记忆 |
 | --- | --- | --- |
 | **负责** | 让当前对话接得上 | 保存经历、人物认识和原话 |
-| **何时产生** | 上下文过长时，由 DSH 触发 | 会话空闲时自动整理，也可手动整理 |
+| **何时产生** | 上下文过长时，由 DSH 触发 | 内容足量后分批后台整理，压缩时收尾，也可手动整理 |
 | **保留什么** | 当前话题、约定、未完成的事 | 事件、偏好与状态、关系、原话证据 |
 | **如何使用** | 直接放在上下文里 | 需要时调用 `suzu_memory_search`，可用返回的记忆 ID 继续查关联 |
 | **插件负责** | 按会话替换压缩提示词（可选） | 收录、整理和检索 |
@@ -139,6 +139,8 @@
    ```
 4. 按提示完成安装，确认 `dsh-suzu-memory` 已启用。如果 DSH 提示需要重启，就重启一次。
 5. 在会话中选择聊天模型，正常聊天即可。打开「设置 → Suzu Memory」可以查看和管理记忆。
+
+“包名或地址”也可以直接填写 Release 页中 `.tgz` 安装包的下载链接。请使用打包好的安装包；Memory 依赖尚未发布到 npm，填写仓库地址或从 Git 安装会因无法解析这些依赖而失败。
 
 > [!NOTE]
 > 整理记忆需要调用模型，会消耗所选模型的额度。
@@ -262,6 +264,16 @@ dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.3.3.tgz"
 > [!WARNING]
 > 在 DSH 会话列表中删除会话，**目前不会**同时删除该会话的记忆数据。需要手动清理时，可以用 `/suzu-memory-status` 返回的 `status.databasePath` 找到对应的数据库。操作数据文件之前，先停止相关会话或关闭 DSH。
 
+## 整理时机
+
+原文先写入当前会话的本地待处理记录，不调用模型。每个完整回复结束后检查累计长度；默认正文累计到约 12000 字符后在后台分批处理，并等待后续一轮完成，作为当前批次的参考。下一批还会参考前一轮；参考内容不重复作为核心证据归档。
+
+DSH 开始压缩，或通过用户消息替换上下文时，会在后台处理剩余内容；“立即整理”也使用同样的分窗和长度限制。压缩不会等待抽取结束。关闭后重新打开会话会恢复待处理进度，未达到触发条件的短对话继续等待。
+
+批次优先保持完整回复，单条消息不截断。单条消息超过正文目标但仍能放入整个请求预算时单独处理；超过整个请求上限时保留原文并交审核台处理。前后参考轮过长或整个请求超预算时，先缩减参考内容，再缩小核心批次。
+
+长度限制约束单次抽取请求。正常处理跟得上聊天时，尾部保留一批以内的正文及等待中的后续轮；模型处理较慢或接口失败时会保留积压和进度，继续分批处理。
+
 ## 高级配置
 
 一般情况下用设置页就够了。如果需要指定分析模型、数据目录或调整整理行为，可以在当前 profile 的 `cordis.patch.yml` 中覆盖插件配置：
@@ -270,6 +282,7 @@ dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.3.3.tgz"
 - id: suzu-memory
   config:
     automaticMaintenance: true
+    archiveBatchCharacters: 12000
     consoleEnabled: true
     analysisTimeoutMs: 180000
     analysisMaxTokens: 16384
@@ -282,7 +295,11 @@ dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.3.3.tgz"
 | `dataRoot` | 空 | 记忆数据目录，留空时使用当前 profile 下的 `suzu-memory/` |
 | `analysisProvider` / `analysisModel` | 空 | 留空时沿用会话模型；要填就两个都填，且须是 DSH 中已注册的服务商和模型 |
 | `memoryOwner` / `userName` | `Assistant` / `User` | 整理材料中对助手和用户的称呼 |
-| `automaticMaintenance` | `true` | 会话空闲后自动整理 |
+| `timeZone` | 空 | 留空跟随系统时区；可指定 `Asia/Shanghai` 等 IANA 时区，用于记忆日期与召回 |
+| `automaticMaintenance` | `true` | 内容足量后分批后台整理，压缩时处理尾批 |
+| `archiveBatchCharacters` | `12000` | 每批正文的目标字符数；优先在完整回复边界分批 |
+| `archiveContextCharacters` | `12000` | 前文与后续一轮各自的参考字符预算 |
+| `archiveRequestCharacters` | `64000` | 单次抽取请求的总字符上限，包含提示词、Schema 和前后文 |
 | `consoleEnabled` | `true` | 允许按需启动本机的记忆审核台 |
 | `recallLimit` | `5` | 单次检索返回的候选数，范围 1–10 |
 | `recallMaximumCharacters` | `12000` | 单次检索结果的字符上限，范围 1000–48000 |
@@ -321,7 +338,7 @@ New-Item -ItemType Directory -Force ./dist
 npm pack --pack-destination ./dist
 ```
 
-执行后会生成 `dist/dsh-suzu-memory-0.3.3.tgz`，按[快速开始](#快速开始)安装即可。测试包含 DSH 官方运行时的集成测试，使用受控的模型适配器，不需要真实的 API Key。验证范围和已知限制见 [VALIDATION.md](VALIDATION.md)。
+执行后会生成 `dist/dsh-suzu-memory-0.3.3.tgz`，按[快速开始](#快速开始)安装即可。测试包含 DSH 官方运行时的集成测试，使用受控的模型适配器，不需要真实的 API Key。
 
 ```text
 dsh-suzu-memory/
@@ -336,8 +353,7 @@ dsh-suzu-memory/
 │   └── client.js            设置页界面
 ├── vendor/suzu-memory/      Suzu Memory 核心快照（与上游一致）
 ├── test/                    单元测试与 DSH 集成测试
-├── UPSTREAM.json            上游仓库与固定提交
-└── VALIDATION.md            验证记录
+└── UPSTREAM.json            上游仓库与固定提交
 ```
 
 适配代码都在 `src/`，`vendor/suzu-memory/` 下的核心算法源码不做修改，上游版本和固定提交记录在 [UPSTREAM.json](UPSTREAM.json)。安装包通过 bundled dependencies 携带所需的 Memory 包及其资源。
