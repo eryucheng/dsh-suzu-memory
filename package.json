@@ -5,6 +5,21 @@
   "type": "module",
   "license": "Apache-2.0",
   "author": "儿玉诚也",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eryucheng/dsh-suzu-memory.git"
+  },
+  "homepage": "https://github.com/eryucheng/dsh-suzu-memory#readme",
+  "bugs": {
+    "url": "https://github.com/eryucheng/dsh-suzu-memory/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "suzu-memory",
+    "long-term-memory",
+    "memory"
+  ],
   "main": "./src/index.mjs",
   "exports": {
     ".": "./src/index.mjs",
@@ -23,6 +38,8 @@
     "src",
     "cordis.patch.yml",
     "UPSTREAM.json",
+    "docs/images",
+    "screenshots.json",
     "vendor/suzu-memory/LICENSE"
   ],
   "dsh": {

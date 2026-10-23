@@ -31,7 +31,9 @@
 
 安装包：`dist/dsh-suzu-memory-0.3.2.tgz`。
 
-SHA-256：`7b4b82c0de3a963dfe6d0d0cccc23e51bbac81731d8501f664cee0a206b86577`。
+SHA-256：`fa76ac8edb95faae188fa77a713c7098e197f9342120458f4755946007c5188b`。
+
+2026-10-23 发布前重新打包，加入当前 README 配图、仓库元数据和市场截图声明，功能源码未改变。发布包为 710047 字节；包内适配源码、README、配图和元数据与当前文件一致，17 个 Memory bundled packages 均存在。本地预览页、临时脚本与会话数据未纳入安装包。
 
 本次截图、原生流程、界面请求统计、保存冲突、失败重试、本机更新及清理记录位于 `D:\Temp\Codex\dsh-suzu-memory-prompts-20261022`。
 
