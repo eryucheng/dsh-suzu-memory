@@ -1,13 +1,13 @@
 {
   "memory": {
     "repository": "https://github.com/eryucheng/suzu-memory",
-    "commit": "1fb4b57e1d98202fe061e681d8cdd706520e7e8c",
+    "commit": "0eb820eeaf7cc2379c2f27ac48d405f4cfd52886",
     "directory": "vendor/suzu-memory",
     "license": "Apache-2.0"
   },
   "dsh": {
     "repository": "https://github.com/deepseek-ai/deepseek-harness",
-    "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
-    "version": "0.2.1-rc.2"
+    "commit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+    "version": "0.2.1-rc.3"
   }
 }
