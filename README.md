@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/eryucheng/dsh-suzu-memory/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/eryucheng/dsh-suzu-memory/ci.yml?branch=main&amp;label=CI&amp;logo=github" alt="CI 构建状态"></a>
-  <a href="https://github.com/eryucheng/dsh-suzu-memory/releases/latest"><img src="https://img.shields.io/badge/release-v0.4.1-9365cb" alt="版本 0.4.1"></a>
+  <a href="https://github.com/eryucheng/dsh-suzu-memory/releases/latest"><img src="https://img.shields.io/badge/release-v0.5.0-9365cb" alt="版本 0.5.0"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-0.2.1--rc.3-4d6bfe" alt="适配 DSH 0.2.1-rc.3"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-22.19%2B%20%7C%2024%2B-5fa04e?logo=nodedotjs&amp;logoColor=white" alt="Node.js 22.19+ 或 24+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-777bc4" alt="Apache License 2.0"></a>
@@ -113,17 +113,17 @@
 
 | 主题 | 内容 |
 | --- | --- |
-| [工作机制](https://github.com/eryucheng/suzu-memory/blob/af9d57a674f7cb8da6ce22cd872056896605ae50/README.md#工作机制) | 记录经历、后台整理、按需召回的完整流程 |
-| [多路检索与证据展开](https://github.com/eryucheng/suzu-memory/blob/af9d57a674f7cb8da6ce22cd872056896605ae50/README.md#多路检索与证据展开) | `suzu_memory_search` 背后的检索算法 |
-| [人物认识的十二个维度](https://github.com/eryucheng/suzu-memory/blob/af9d57a674f7cb8da6ce22cd872056896605ae50/README.md#人物认识的十二个维度) | 偏好、习惯、目标、关系等认识如何区分和组织 |
-| [状态演化与来源追溯](https://github.com/eryucheng/suzu-memory/blob/af9d57a674f7cb8da6ce22cd872056896605ae50/README.md#状态演化与来源追溯) | 认识如何随新证据更新，原话如何追溯 |
-| [界面预览](https://github.com/eryucheng/suzu-memory/blob/af9d57a674f7cb8da6ce22cd872056896605ae50/README.md#界面预览) | 记忆审核台和三维记忆网络 |
+| [工作机制](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#工作机制) | 记录经历、后台整理、按需召回的完整流程 |
+| [多路检索与证据展开](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#多路检索与证据展开) | `suzu_memory_search` 背后的检索算法 |
+| [人物认识的十二个维度](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#人物认识的十二个维度) | 偏好、习惯、目标、关系等认识如何区分和组织 |
+| [状态演化与来源追溯](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#状态演化与来源追溯) | 认识如何随新证据更新，原话如何追溯 |
+| [界面预览](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#界面预览) | 记忆审核台和三维记忆网络 |
 
 ## 兼容性
 
 | 项目 | 版本 |
 | --- | --- |
-| 插件 | `0.4.1` |
+| 插件 | `0.5.0` |
 | DeepSeek Harness | `>=0.2.1-rc.2 <0.3.0-0` |
 | 开发与测试使用 | `0.2.1-rc.3` |
 | Node.js | `^22.19.0` 或 `>=24.0.0` |
@@ -132,16 +132,16 @@
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/eryucheng/dsh-suzu-memory/releases/latest) 下载 `dsh-suzu-memory-0.4.1.tgz`，**保持 `.tgz` 格式，不要解压**。
+1. 从 [Releases](https://github.com/eryucheng/dsh-suzu-memory/releases/latest) 下载 `dsh-suzu-memory-0.5.0.tgz`，**保持 `.tgz` 格式，不要解压**。
 2. 打开 DSH 的「插件」页面，选择「添加插件 → 安装第三方插件」。
 3. 在「包名或地址」中填入安装包的**绝对路径**（不加引号），例如：
    ```text
-   D:/Downloads/dsh-suzu-memory-0.4.1.tgz
+   D:/Downloads/dsh-suzu-memory-0.5.0.tgz
    ```
 4. 按提示完成安装，确认 `dsh-suzu-memory` 已启用。如果 DSH 提示需要重启，就重启一次。
 5. 在会话中选择聊天模型，正常聊天即可。打开「设置 → Suzu Memory」可以查看和管理记忆。
 
-“包名或地址”也可以直接填写 Release 页中 `.tgz` 安装包的下载链接。请使用打包好的安装包；Memory 依赖尚未发布到 npm，填写仓库地址或从 Git 安装会因无法解析这些依赖而失败。
+“包名或地址”也可以填写 `dsh-suzu-memory`，直接从 npm 安装，或填写 Release 页中 `.tgz` 安装包的下载链接。安装包已包含 Memory 核心；请使用包名或打包好的安装包，填写仓库地址或从 Git 安装会因无法解析内部依赖而失败。
 
 > [!NOTE]
 > 整理记忆需要调用模型，会消耗所选模型的额度。
@@ -156,7 +156,7 @@ Web 部署时，填写的路径必须是 **DSH 服务所在机器**上的文件�
 也可以用命令行安装到 Web profile：
 
 ```powershell
-dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.4.1.tgz"
+dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.5.0.tgz"
 ```
 
 桌面版建议用插件页面安装。如果要用命令行管理桌面版插件，需要使用桌面版安装目录下 `resources/runtime/cli/bin/` 中自带的 `dsh`（Windows 上是 `dsh.cmd`），用法见 [DSH 桌面版命令行说明](https://github.com/deepseek-ai/deepseek-harness/blob/1f81c047fc48fa190a683e469daa699857e9afe8/apps/desktop/README.md#bundled-command-runtime)。通过 npm 安装的 `dsh` 管理不了桌面版的 profile。
@@ -284,9 +284,10 @@ DSH 开始压缩，或通过用户消息替换上下文时，会在后台处理�
   config:
     automaticMaintenance: true
     archiveBatchCharacters: 12000
+    archiveBatchMessages: 100
     consoleEnabled: true
     analysisTimeoutMs: 180000
-    analysisMaxTokens: 16384
+    analysisMaxTokens: 32768
     recallLimit: 5
     recallMaximumCharacters: 12000
 ```
@@ -299,6 +300,7 @@ DSH 开始压缩，或通过用户消息替换上下文时，会在后台处理�
 | `timeZone` | 空 | 留空跟随系统时区；可指定 `Asia/Shanghai` 等 IANA 时区，用于记忆日期与召回 |
 | `automaticMaintenance` | `true` | 内容足量后分批后台整理，压缩时处理尾批 |
 | `archiveBatchCharacters` | `12000` | 每批正文的目标字符数；优先在完整回复边界分批 |
+| `archiveBatchMessages` | `100` | 每批完整消息条数上限；字符数或条数任一达标后等待后续一轮，再分批整理 |
 | `archiveContextCharacters` | `12000` | 前文与后续一轮各自的参考字符预算 |
 | `archiveRequestCharacters` | `64000` | 单次抽取请求的总字符上限，包含提示词、Schema 和前后文 |
 | `consoleEnabled` | `true` | 允许按需启动本机的记忆审核台 |
@@ -314,7 +316,7 @@ DSH 开始压缩，或通过用户消息替换上下文时，会在后台处理�
 | 字段 | 默认值 | 范围 |
 | --- | --- | --- |
 | `analysisTimeoutMs` | `180000` | 1000–600000 |
-| `analysisMaxTokens` | `16384` | 256–64000 |
+| `analysisMaxTokens` | `32768` | 256–64000 |
 | `maximumOutputCharacters` | `262144` | 1024–2000000 |
 | `maximumInputBatches` | `2` | 1–20 |
 | `maximumMaintenanceTasks` | `10` | 1–100 |
@@ -339,7 +341,7 @@ New-Item -ItemType Directory -Force ./dist
 npm pack --pack-destination ./dist
 ```
 
-执行后会生成 `dist/dsh-suzu-memory-0.4.1.tgz`，按[快速开始](#快速开始)安装即可。测试包含 DSH 官方运行时的集成测试，使用受控的模型适配器，不需要真实的 API Key。
+执行后会生成 `dist/dsh-suzu-memory-0.5.0.tgz`，按[快速开始](#快速开始)安装即可。测试包含 DSH 官方运行时的集成测试，使用受控的模型适配器，不需要真实的 API Key。
 
 ```text
 dsh-suzu-memory/

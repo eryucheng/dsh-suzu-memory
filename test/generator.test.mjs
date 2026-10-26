@@ -33,10 +33,18 @@ test('invalid JSON and schema violations fail before entering Memory', async t =
 
 test('truncation, transport failure and missing finish are not accepted as valid output', async t => {
   const { ctx } = await host(t, (_options, count) => count === 1
-    ? [{ type: 'text-delta', index: 0, text: '{"memories":[]}' }, { type: 'finish', reason: { kind: 'max-tokens' } }]
+    ? [...textChunks('{"memories":[]}').slice(0, -1), { type: 'finish', reason: { kind: 'max-tokens' } }]
     : count === 2 ? [{ type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', message: 'rate limit' } } }]
       : [{ type: 'text-delta', index: 0, text: '{"memories":[]}' }]);
-  for (let i = 0; i < 3; i++) await assert.rejects(generator(ctx)(request), { code: 'MEMORY_GENERATION_FAILED' });
+  await assert.rejects(generator(ctx)(request), error => {
+    assert.equal(error.code, 'MAX_TOKENS');
+    assert.equal(error.usage.output_tokens, 20);
+    assert.equal(error.usage.input_tokens, 30);
+    assert.equal(error.model, 'deepseek-test');
+    assert.equal(error.diagnostics.maxOutputTokens, 8192);
+    return true;
+  });
+  for (let i = 0; i < 2; i++) await assert.rejects(generator(ctx)(request), { code: 'MEMORY_GENERATION_FAILED' });
 });
 
 test('cancellation and output limits release an in-flight stream', async t => {

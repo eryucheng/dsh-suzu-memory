@@ -829,7 +829,7 @@ export async function runSemanticTaskMaintenance({
 }
 
 export async function runEventContinuityMaintenance({ repository, agentId, generator, embeddingProvider,
-  maximumTasks = 10, usageLedgerPath = '' }) {
+  maximumTasks = 10, usageLedgerPath = '', maximumRequestCharacters }) {
   if (typeof generator !== 'function' || typeof embeddingProvider !== 'function') {
     return { status: 'disabled', reason: 'event-continuity-provider-not-configured', completed: [], failed: [] };
   }
@@ -843,7 +843,8 @@ export async function runEventContinuityMaintenance({ repository, agentId, gener
     try {
       await runBudgetedMemoryParts({ parts: progress.parts, checkpoint,
         prepare: async part => {
-          try { return await prepareEventContinuity({ repository, agentId, memoryIds: part.memoryIds, generator, embeddingProvider, usageLedgerPath }); }
+          try { return await prepareEventContinuity({ repository, agentId, memoryIds: part.memoryIds, generator, embeddingProvider,
+            usageLedgerPath, maximumRequestCharacters }); }
           catch (error) {
             if (error.code === 'MEMORY_STATE_ANALYSIS_INPUT_TOO_LARGE') throw memoryBudgetError(error.message);
             throw error;
@@ -857,7 +858,8 @@ export async function runEventContinuityMaintenance({ repository, agentId, gener
     } catch (error) {
       assertEventSourceExecutionCurrent();
       failed.push(repository.failMaintenanceTask({ agentId, taskId: task.id, workerId: claimed.workerId,
-        errorMessage: error.message, retry: !['MAX_TOKENS', 'MEMORY_STRUCTURE_INPUT_TOO_LARGE'].includes(error.code),
+        errorMessage: error.message, retry: !['MAX_TOKENS', 'MEMORY_STRUCTURE_INPUT_TOO_LARGE',
+          'MEMORY_EVENT_CONTINUITY_COVERAGE', 'MEMORY_TASK_SCHEMA_INVALID'].includes(error.code),
           errorDetails: { stage: 'event-continuity', memoryIds: task.payload.memoryIds, errorCode: error.code || '',
             providerDiagnostics: error.diagnostics || {} },
         result: { eventContinuityProgress: progress } }));
@@ -878,6 +880,7 @@ export async function runSemanticMemoryMaintenance({
   minimumStructureMemories = DEFAULT_MINIMUM_STRUCTURE_MEMORIES,
   maximumStateRequests = 10,
   maximumConsolidationRuns = 3,
+  maximumRequestCharacters,
 } = {}) {
   const normalizedAgentId = clean(agentId);
   if (!repository || !normalizedAgentId) {
@@ -912,7 +915,7 @@ export async function runSemanticMemoryMaintenance({
     agentId: normalizedAgentId,
   });
   const eventContinuity = await runEventContinuityMaintenance({ repository, agentId: normalizedAgentId,
-    generator, embeddingProvider, maximumTasks, usageLedgerPath });
+    generator, embeddingProvider, maximumTasks, usageLedgerPath, maximumRequestCharacters });
   const pendingStateMemories = repository.listPendingProvisionalMemories(normalizedAgentId, { limit: 5_000 })
     .filter(memory => memory.metadata?.reportedStateProposalId || memory.metadata?.preferenceProposalId);
   for (const memory of pendingStateMemories) {

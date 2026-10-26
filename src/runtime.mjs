@@ -129,6 +129,7 @@ export class DshMemoryRuntime {
 
   chunkPolicy(flush) {
     return { maximumCoreCharacters: this.config.archiveBatchCharacters,
+      maximumCoreMessages: this.config.archiveBatchMessages,
       maximumContextCharacters: this.config.archiveContextCharacters,
       maximumRequestCharacters: this.config.archiveRequestCharacters, flush,
       resolveReply: row => {
@@ -183,7 +184,7 @@ export class DshMemoryRuntime {
         if (entry.flushThrough && entry.flushThrough !== flushing) continue;
         if (last?.status === 'waiting') {
           if (entry.cursor.nextOffset !== offset
-            && (entry.pendingCharacters >= this.config.archiveBatchCharacters || entry.pendingEvents >= 500)) continue;
+            && (entry.pendingCharacters >= this.config.archiveBatchCharacters || entry.pendingEvents >= this.config.archiveBatchMessages)) continue;
           return result;
         }
         if (!entry.pendingEvents) { entry.flushThrough = 0; return result; }
@@ -208,7 +209,7 @@ export class DshMemoryRuntime {
       if (!entry.pendingEvents) return;
       if (!flush) {
         if (entry.running || entry.autoCheckedOffset === entry.cursor.nextOffset) return;
-        if (!entry.flushThrough && entry.pendingCharacters < this.config.archiveBatchCharacters && entry.pendingEvents < 500) return;
+        if (!entry.flushThrough && entry.pendingCharacters < this.config.archiveBatchCharacters && entry.pendingEvents < this.config.archiveBatchMessages) return;
       }
       entry.autoCheckedOffset = entry.cursor.nextOffset;
       void this.maintain(session, { force: flush }).catch(error => { if (!this.closing) this.report(error); });

@@ -27,6 +27,7 @@ import {
   buildEpisodicEvidenceSeedCandidates,
   buildOrdinarySeedCandidates,
   buildSubjectConstraint,
+  createSeedLexicalScorer,
   lexicalRoute,
   seedRoutingAudit,
 } from "./seed-routes.mjs";
@@ -66,6 +67,7 @@ export const DEFAULT_RETRIEVAL_OPTIONS = Object.freeze({
   includeCandidateContext: false,
   maximumEpisodicCandidates: 20,
   maximumContextChars: 1400,
+  maximumContextMemories: 5,
   maximumEvidenceMessages: 2,
   maximumExpandedEvidenceMessages: 4,
   maximumMessageChars: 500,
@@ -74,9 +76,7 @@ export const DEFAULT_RETRIEVAL_OPTIONS = Object.freeze({
   minimumChainPathScore: 0.3,
   minimumActivationContribution: 0.12,
   maximumActivationWork: 100,
-  maximumConvergedSeeds: 3,
   maximumConvergenceCandidates: 50,
-  maximumConvergedSeedScoreGap: 0.18,
   fanoutSuppressionExponent: 0.5,
   minimumVectorSimilarity: 0.42,
   strongVectorSimilarity: 0.5,
@@ -566,9 +566,8 @@ export function fuseCandidateLanes(structuredCandidates, episodicCandidates, max
     values.forEach((candidate, index) => {
       const normalized = {
         ...candidate,
-        retrievalLane: clean(candidate.retrievalLane)
-          || retrievalLane
-          || (candidate.node.kind === "utterance" ? "episodic-evidence" : "structured-memory"),
+        retrievalLane: candidate.node.kind === "utterance" ? "episodic-evidence"
+          : clean(candidate.retrievalLane) || retrievalLane || "structured-memory",
         laneRank: index + 1,
       };
       const existing = byMemoryId.get(candidate.node.id);
@@ -768,7 +767,7 @@ function selectStrongestDirectEvidence(primary, expanded, relation, maximum = 1)
     .map((item) => item.node);
 }
 
-function selectDialogueEvidence(primary, expanded, maximum) {
+function selectDialogueEvidence(primary, expanded, maximum, preparedQuery = null) {
   const limit = Math.max(0, Math.floor(Number(maximum)));
   if (!limit) return [];
   const utterances = expanded.nodes
@@ -781,6 +780,8 @@ function selectDialogueEvidence(primary, expanded, maximum) {
     utterances.push(primary);
   }
   if (primary.kind !== "utterance") {
+    const relevance = new Map(utterances.map(node => [node.id, preparedQuery
+      ? lexicalScore(preparedQuery, node.content).score : 0]));
     const supportIds = directRelationIds(primary, expanded, "supported_by", 2);
     const directIds = new Set(utterances
       .filter((node) => supportIds.has(node.id))
@@ -805,7 +806,11 @@ function selectDialogueEvidence(primary, expanded, maximum) {
         directCount: Number(directIds.has(left.id)) + Number(directIds.has(right.id)),
       });
     }
-    pairs.sort((left, right) => right.directCount - left.directCount || left.gap - right.gap);
+    pairs.sort((left, right) => (
+      (relevance.get(right.left.id) + relevance.get(right.right.id))
+        - (relevance.get(left.left.id) + relevance.get(left.right.id))
+      || right.directCount - left.directCount || left.gap - right.gap
+    ));
     if (pairs.length) {
       const pair = pairs[0];
       const selected = [pair.left, pair.right]
@@ -822,12 +827,18 @@ function selectDialogueEvidence(primary, expanded, maximum) {
         - Date.parse(right.event_start || right.recorded_at || "")
       ));
     }
-    return utterances.filter((node) => directIds.has(node.id)).slice(0, limit);
+    return utterances.filter((node) => directIds.has(node.id))
+      .sort((left, right) => relevance.get(right.id) - relevance.get(left.id))
+      .slice(0, limit);
   }
   if (utterances.length <= limit) return utterances;
   const anchor = Math.max(0, utterances.findIndex((node) => node.id === primary.id));
   const selected = [utterances[anchor]];
-  const oppositeRole = utterances.find((node) => node.subject_role !== utterances[anchor].subject_role);
+  const oppositeRole = utterances
+    .filter(node => node.subject_role !== utterances[anchor].subject_role)
+    .sort((left, right) => (
+      Math.abs(utterances.indexOf(left) - anchor) - Math.abs(utterances.indexOf(right) - anchor)
+    ))[0];
   if (oppositeRole && !selected.some((node) => node.id === oppositeRole.id)) selected.push(oppositeRole);
   for (let distance = 1; selected.length < limit; distance += 1) {
     const before = utterances[anchor - distance];
@@ -1395,9 +1406,16 @@ function followMemoryChain({
   };
 }
 
-function formatMemoryChain(nodes, options) {
+function formatMemoryChain(nodes, options, evidence = []) {
+  const nodeIds = new Set(nodes.map(node => node.id));
+  const additionalEvidence = evidence.filter(node => !nodeIds.has(node.id));
   return joinBoundedSections(
-    nodes.map((node) => formatPrimary(node, [], options)),
+    [
+      ...nodes.map((node) => formatPrimary(node, [], options)),
+      ...additionalEvidence.map((node, index) => [
+        index === 0 ? "相关原话：" : "", formatEvidenceMemory(node, options),
+      ].filter(Boolean).join("\n")),
+    ],
     options.maximumContextChars,
   );
 }
@@ -1450,25 +1468,18 @@ function selectConvergedSeeds({
   agentId,
   candidates,
   primaryCandidate,
-  chainIntent,
-  intent,
   eligibleMemoryIds = null,
   options,
 }) {
   const disabled = { enabled: false, candidates: primaryCandidate ? [primaryCandidate] : [], connections: [] };
-  if (
-    !primaryCandidate
-    || chainIntent.mode !== "none"
-    || ["utterance", "evidence", "counterevidence", "evidence-review"].includes(intent)
-    || primaryCandidate.lexical.queryTerms.length < 2
-  ) return disabled;
+  const maximumSeeds = Math.max(1, normalizedEvidenceLimit(options.maximumContextMemories, 5));
+  if (!primaryCandidate || maximumSeeds <= 1) return disabled;
   const eligible = candidates.filter((candidate) => (
     candidate.node.id !== primaryCandidate.node.id
-    && candidate.lexical.overlap > 0
-    && candidate.score >= primaryCandidate.score - Number(options.maximumConvergedSeedScoreGap)
+    && !isProvisionalNode(candidate.node)
   ));
   if (!eligible.length) return disabled;
-  const pool = [primaryCandidate, ...eligible].slice(0, 10);
+  const pool = [primaryCandidate, ...eligible];
   const ids = pool.map((candidate) => candidate.node.id);
   const placeholders = ids.map(() => "?").join(", ");
   const relationPlaceholders = CONVERGENCE_RELATIONS.map(() => "?").join(", ");
@@ -1491,13 +1502,9 @@ function selectConvergedSeeds({
     }
   }
   const selected = [primaryCandidate];
-  const coveredTerms = new Set(primaryCandidate.lexical.matchedTerms || []);
   const connections = [];
   for (const candidate of eligible) {
-    if (selected.length >= Math.max(1, Number(options.maximumConvergedSeeds))) break;
-    const newTerms = (candidate.lexical.matchedTerms || [])
-      .filter((term) => !coveredTerms.has(term));
-    if (!newTerms.length) continue;
+    if (selected.length >= maximumSeeds) break;
     let connection = null;
     for (const current of selected) {
       const direct = neighbors.get(current.node.id)?.get(candidate.node.id);
@@ -1523,10 +1530,11 @@ function selectConvergedSeeds({
         break;
       }
     }
-    if (!connection) continue;
+    // Directly admitted matches share the same budget regardless of kind.
+    // Weak text-only clues still need a graph relation to a selected match.
+    if (!connection && candidate.admission === "convergence-only") continue;
     selected.push(candidate);
-    for (const term of newTerms) coveredTerms.add(term);
-    connections.push(connection);
+    if (connection) connections.push(connection);
   }
   return selected.length > 1
     ? { enabled: true, candidates: selected, connections }
@@ -1990,7 +1998,7 @@ function formatRecallText({
     : chain.mode === "causal" && chain.nodes.length > 1
     ? formatCausalChain(primary, chain.nodes, options, chain.direction)
     : chain.nodes.length > 1
-    ? formatMemoryChain(chain.nodes, options)
+    ? formatMemoryChain(chain.nodes, options, evidence)
     : formatPrimary(primary, evidence, options);
   const stateBoundary = rawStateFallback
     ? "记忆边界：以下是主体当时的原始陈述；可以据此复述其明确说法，但它尚未经过状态整理，不能自行扩大或更新为更强的稳定结论。"
@@ -2146,7 +2154,6 @@ export async function retrieveMemories({
   const temporalOverview = temporal.matched && !topicQuery;
   const softTemporal = temporal.matched && (!exactTemporal || !temporalOverview);
   const retrievalQuery = temporal.matched ? topicQuery : normalizedQuery;
-  const preparedQuery = prepareLexicalQuery(retrievalQuery);
   const intent = temporalOverview ? 'event' : classifyRecallIntent(normalizedQuery);
   const representationIntent = classifyRepresentationIntent(normalizedQuery);
   const relationshipIntent = classifyRelationshipQueryIntent(normalizedQuery);
@@ -2299,6 +2306,13 @@ export async function retrieveMemories({
     const entitySeeds = entitySeedScores(repository, normalizedAgentId, retrievalQuery, {
       eligibleMemoryIds,
     });
+    const personNames = [
+      ...(Array.isArray(queryPerspective?.speakerNames) ? queryPerspective.speakerNames : []),
+      ...(Array.isArray(queryPerspective?.addresseeNames) ? queryPerspective.addresseeNames : []),
+      ...entitySeeds.matches.filter(match => match.kind === "person").map(match => match.matchedLabel),
+    ];
+    const preparedQuery = prepareLexicalQuery(retrievalQuery, { personNames });
+    const scoreLexical = createSeedLexicalScorer(preparedQuery);
     const naturalDecaySpecificityByMemory = exactTemporal && !temporalOverview && naturalDecayPolicy.enabled
       ? new Map(temporalCandidates({ nodes, temporal, query: temporal.remainingQuery, preparedQuery, options,
           subjectConstraint, entityScores: entitySeeds.scores }).filter(candidate =>
@@ -2401,6 +2415,7 @@ export async function retrieveMemories({
       candidates = buildOrdinarySeedCandidates({
         nodes: candidateNodes,
         preparedQuery,
+        scoreLexical,
         query: retrievalQuery,
         intent,
         bm25Scores: bm25.scores,
@@ -2419,6 +2434,7 @@ export async function retrieveMemories({
       convergenceCandidates = buildOrdinarySeedCandidates({
         nodes: candidateNodes,
         preparedQuery,
+        scoreLexical,
         query: retrievalQuery,
         intent,
         bm25Scores: bm25.scores,
@@ -2522,7 +2538,9 @@ export async function retrieveMemories({
           nodes: candidateNodes,
           query: episodicQuery,
           preparedQuery,
+          scoreLexical,
           temporal,
+          intent,
           bm25Scores: bm25.scores,
           vectorScores: vector.scores,
           entityScores: entitySeeds.scores,
@@ -2714,7 +2732,27 @@ export async function retrieveMemories({
       };
     }
     const primaryIsProvisional = isProvisionalNode(primary);
-    const expanded = primaryIsProvisional
+    const stateCompletion = primaryIsProvisional
+      ? null
+      : currentStateCompletion(repository, primary);
+    const scopeCompletion = primaryIsProvisional
+      ? null
+      : stateScopeCompletion(database, primary, eligibleMemoryIds);
+    const representationCompletion = !stateCompletion
+      && !scopeCompletion
+      && !["evidence", "counterevidence", "evidence-review", "utterance"].includes(intent)
+      ? currentRepresentationCompletion(repository, primary)
+      : null;
+    const rankedContext = !primaryIsProvisional
+      && chainIntent.mode === "none"
+      && !anchorCandidates.length
+      && !["evidence", "counterevidence", "evidence-review", "utterance"].includes(intent)
+      && !temporalOverview && temporal.ordering !== "latest"
+      && !stateCompletion && !scopeCompletion && !representationCompletion
+      && subjectQuery.focus !== "state"
+      && relationshipIntent === "any" && representationIntent === "any";
+    const maximumContextMemories = Math.max(1, normalizedEvidenceLimit(options.maximumContextMemories, 5));
+    const expanded = primaryIsProvisional || rankedContext
       ? { nodes: [primary], edges: [] }
       : repository.expand(normalizedAgentId, [primary.id], {
         // One hop reaches explicit evidence; the second reaches the other side
@@ -2731,7 +2769,7 @@ export async function retrieveMemories({
         worldFrame: worldScope.allowCrossWorld ? "" : worldScope.frame,
       });
     const episodicPrimary = episodicCandidates[0]?.node || null;
-    const episodicExpanded = !episodicPrimary
+    let episodicExpanded = !episodicPrimary || rankedContext
       ? { nodes: [], edges: [] }
       : episodicPrimary.id === primary.id
         ? expanded
@@ -2744,7 +2782,11 @@ export async function retrieveMemories({
             worldId: worldScope.allowCrossWorld ? "" : worldScope.id,
             worldFrame: worldScope.allowCrossWorld ? "" : worldScope.frame,
           });
-    const evidenceDisclosure = evidenceDisclosurePolicy(intent, options);
+    const evidenceDisclosure = rankedContext
+      ? { mode: "ranked-context", maximumMessages: maximumContextMemories,
+          ordinaryMaximum: maximumContextMemories,
+          expandedMaximum: normalizedEvidenceLimit(options.maximumExpandedEvidenceMessages) }
+      : evidenceDisclosurePolicy(intent, options);
     const maximumEvidence = evidenceDisclosure.maximumMessages;
     const supportEvidence = intent === "evidence-review" && maximumEvidence >= 1
       ? selectStrongestDirectEvidence(primary, expanded, "supported_by", 1)
@@ -2752,12 +2794,12 @@ export async function retrieveMemories({
     const counterEvidence = intent === "evidence-review" && maximumEvidence >= 1
       ? selectStrongestDirectEvidence(primary, expanded, "challenged_by", 1)
       : [];
-    const directlyLinkedDialogue = (
+    const directlyLinkedDialogue = !rankedContext && (
       primary.kind === "utterance" || !structuredStateNode(primary)
     )
-        ? selectDialogueEvidence(primary, expanded, maximumEvidence)
+        ? selectDialogueEvidence(primary, expanded, maximumEvidence, preparedQuery)
         : [];
-    const automaticEpisodicEvidence = primary.kind === "utterance"
+    const automaticEpisodicEvidence = rankedContext ? [] : primary.kind === "utterance"
       ? directlyLinkedDialogue
       : !structuredStateNode(primary) && [
           "event", "episode", "fact", "plan", "commitment", "open_loop",
@@ -2766,12 +2808,12 @@ export async function retrieveMemories({
             directlyLinkedDialogue.length
               ? directlyLinkedDialogue
               : episodicPrimary
-                ? selectDialogueEvidence(episodicPrimary, episodicExpanded, maximumEvidence)
+                ? selectDialogueEvidence(episodicPrimary, episodicExpanded, maximumEvidence, preparedQuery)
                 : []
           )
         : [];
-    const evidence = intent === "utterance"
-      ? selectDialogueEvidence(primary, expanded, maximumEvidence)
+    let evidence = intent === "utterance"
+      ? selectDialogueEvidence(primary, expanded, maximumEvidence, preparedQuery)
       : intent === "evidence"
         ? selectDirectEvidence(primary, expanded, maximumEvidence)
         : intent === "counterevidence"
@@ -2779,33 +2821,16 @@ export async function retrieveMemories({
         : intent === "evidence-review"
           ? [...supportEvidence, ...counterEvidence]
         : automaticEpisodicEvidence;
-    const stateCompletion = primaryIsProvisional
-      ? null
-      : currentStateCompletion(repository, primary);
-    const scopeCompletion = primaryIsProvisional
-      ? null
-      : stateScopeCompletion(database, primary, eligibleMemoryIds);
-    const representationCompletion = !stateCompletion
-      && !scopeCompletion
-      && !["evidence", "counterevidence", "evidence-review", "utterance"].includes(intent)
-      ? currentRepresentationCompletion(repository, primary)
-      : null;
-    const convergedSeeds = primaryIsProvisional
-      || primary.kind === "utterance"
-      || stateCompletion
-      || scopeCompletion
-      || representationCompletion
-      || anchorCandidates.length
+    const convergedSeeds = !rankedContext
       ? { enabled: false, candidates: [primaryCandidate], connections: [] }
       : selectConvergedSeeds({
         database,
         agentId: normalizedAgentId,
-        candidates: convergenceCandidates,
+        candidates: fuseCandidateLanes(convergenceCandidates, episodicCandidates,
+          Math.max(options.maximumCandidates, options.maximumConvergenceCandidates)),
         primaryCandidate,
-          chainIntent,
-          intent,
-          eligibleMemoryIds,
-          options,
+        eligibleMemoryIds,
+        options,
       });
     let chain;
     if (temporal.ordering === 'latest' && !anchorCandidates.length) {
@@ -2814,7 +2839,7 @@ export async function retrieveMemories({
       chain = { nodes: rankTemporalCandidates([...candidates, ...episodicCandidates], temporal,
         { ...options, topicless: true }).slice(0, Math.max(1, Number(options.maximumChainMemories))).map(c => c.node),
         paths: [], activation: null };
-    } else if (primaryIsProvisional || primary.kind === "utterance") {
+    } else if (primaryIsProvisional || (primary.kind === "utterance" && !convergedSeeds.enabled)) {
       chain = {
         nodes: [primary],
         paths: [],
@@ -2842,10 +2867,40 @@ export async function retrieveMemories({
         subjectConstraint,
         eligibleMemoryIds,
         plasticityPolicy,
-        options,
+        options: rankedContext ? { ...options, maximumChainMemories: maximumContextMemories } : options,
       });
     }
     if (!chain.nodes.length) chain.nodes = [primary];
+    if (rankedContext) {
+      const selected = new Map();
+      const add = node => {
+        if (selected.size < maximumContextMemories && eligibleMemoryIds.has(node.id)) selected.set(node.id, node);
+      };
+      for (const node of chain.nodes) {
+        if (selected.size >= maximumContextMemories) break;
+        if (selected.has(node.id)) continue;
+        add(node);
+        if (node.kind !== "utterance" || selected.size >= maximumContextMemories) continue;
+        const window = repository.expand(normalizedAgentId, [node.id], {
+          maxDepth: 1, maxNodes: 20, minimumWeight: 0.65,
+          relations: ["followed_by"], traversal: "both",
+          worldId: worldScope.allowCrossWorld ? "" : worldScope.id,
+          worldFrame: worldScope.allowCrossWorld ? "" : worldScope.frame,
+        });
+        episodicExpanded = {
+          nodes: [...new Map([...episodicExpanded.nodes, ...window.nodes].map(value => [value.id, value])).values()],
+          edges: [...new Map([...episodicExpanded.edges, ...window.edges].map(value => [value.id, value])).values()],
+        };
+        for (const message of selectDialogueEvidence(node, window, 2, preparedQuery)) add(message);
+      }
+      chain.nodes = [...selected.values()];
+      chain.paths = chain.paths.filter(value => selected.has(value.memoryId));
+      if (chain.activation) chain.activation.selected = chain.activation.selected.filter(value => selected.has(value.memoryId));
+      convergedSeeds.candidates = convergedSeeds.candidates.filter(value => selected.has(value.node.id));
+      convergedSeeds.connections = convergedSeeds.connections.filter(value => selected.has(value.fromMemoryId) && selected.has(value.toMemoryId));
+      convergedSeeds.enabled = convergedSeeds.candidates.length > 1;
+      evidence = chain.nodes.filter(node => node.kind === "utterance");
+    }
     if (stateCompletion) {
       chain.nodes = [stateCompletion, primary];
       chain.paths = [];

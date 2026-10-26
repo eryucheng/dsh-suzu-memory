@@ -52,6 +52,54 @@ test('length threshold waits for one following round and archives each core once
   assert.equal(entry.memory.listInputEvents({ statuses: ['archived'] }).total, 10);
 });
 
+test('short messages reach the message limit and wait for a following round without early analysis', async t => {
+  const { ctx, adapter } = await host(t);
+  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true }));
+  t.after(() => runtime.close());
+  const value = session();
+  for (let n = 1; n <= 50; n++) {
+    user(value, `短消息${n}`, n);
+    assistant(value, `短回复${n}`, n);
+    await drain(runtime, value);
+  }
+  assert.equal(adapter.calls.length, 0);
+  user(value, '后续轮的消息', 51);
+  assistant(value, '后续轮的回复', 51);
+  await drain(runtime, value);
+  const entry = runtime.require(value);
+  assert.equal(adapter.calls.length, 1);
+  assert.equal(adapter.calls[0].maxTokens, 32768);
+  assert.equal(entry.memory.listInputEvents({ statuses: ['archived'] }).total, 100);
+  assert.equal(entry.memory.listInputEvents().total, 2);
+  assert.match(adapter.calls[0].messages[0].content[0].text, /后续轮的消息/);
+  const history = t.mock.method(value, 'snapshotEvents', () => { throw new Error('unchanged history read'); });
+  const pending = t.mock.method(entry.memory, 'listInputEvents', () => { throw new Error('unchanged pending read'); });
+  await drain(runtime, value);
+  assert.equal(adapter.calls.length, 1);
+  assert.equal(history.mock.callCount(), 0);
+  assert.equal(pending.mock.callCount(), 0);
+});
+
+test('a DSH output truncation splits the batch and archives every source once', async t => {
+  const { ctx, adapter } = await host(t, (_options, count) => {
+    const chunks = textChunks('{"memories":[]}');
+    if (count === 1) chunks.at(-1).reason = { kind: 'max-tokens' };
+    return chunks;
+  });
+  const runtime = new DshMemoryRuntime(ctx, config(t));
+  t.after(() => runtime.close());
+  const value = session();
+  turn(value, 1); turn(value, 2);
+  await runtime.maintain(value, { force: true });
+  const entry = runtime.require(value);
+  const coreCounts = adapter.calls.map(call => [...call.messages[0].content[0].text.matchAll(/^\[M\d{4}\]/gmu)].length);
+  assert.deepEqual(coreCounts, [4, 2, 2]);
+  assert.equal(entry.memory.listInputEvents().total, 0);
+  assert.equal(entry.memory.listInputEvents({ statuses: ['archived'] }).total, 4);
+  assert.equal(entry.memory.listMemories({ kinds: ['utterance'] }).total, 4);
+  assert.equal(entry.error, null);
+});
+
 test('resume preserves the short tail without rereading DSH history or analyzing early', async t => {
   const { ctx, adapter } = await host(t);
   const options = config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000 });

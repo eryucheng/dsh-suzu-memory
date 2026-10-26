@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   ensureCompanionRelationshipStructure,
@@ -104,6 +107,27 @@ test("normalizes one primary user and one companion while allowing third-party e
     }), IDENTITY),
     /second companion/u,
   );
+});
+
+test('keeps candidates with inapplicable null targets without sending a repair request', async () => {
+  const output = { memories: [
+    generatedEventCandidate({ sourceRefs: ['M0001'], stateTarget: null }),
+    generatedEventCandidate({ kind: 'preference', title: '喜欢薰衣草香味', content: 'User 明确说喜欢薰衣草香味。',
+      subjectRole: 'user', subjectName: 'User', canonicalKey: 'lavender', stateFamily: 'preference',
+      stateLabel: '薰衣草香味', retentionReason: 'explicit_preference', sourceRefs: ['M0001'], stateTarget: null }),
+  ] };
+  const original = structuredClone(output);
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
+    generator: async ({ schemaName }) => {
+      calls++;
+      assert.equal(schemaName, 'long-term-memory-extraction-v2');
+      return { output, usage: {} };
+    } });
+  assert.equal(calls, 1);
+  assert.deepEqual(generated.generation.output.memories.map(m => m.title), ['共同完成事件入口设计', '喜欢薰衣草香味']);
+  for (const memory of generated.generation.output.memories) assert.equal(Object.hasOwn(memory, 'stateTarget'), false);
+  assert.deepEqual(output, original);
 });
 
 test("repairs one schema-valid JSON object that fails strict extraction validation", async () => {
@@ -215,7 +239,7 @@ test("retains individually valid candidates when one repair cannot satisfy domai
 
 test("never lets a repair response delete candidates that were already valid", async () => {
   const invalid = generatedEventCandidate({ eventDate: "August 4, 2026" });
-  const valid = generatedEventCandidate({ title: "必须保留的有效候选", sourceRefs: ["M0001"] });
+  const valid = generatedEventCandidate({ title: "必须保留的有效候选", sourceRefs: ["M0001"], stateTarget: null });
   let calls = 0;
   const generated = await generateCompanionEventBatch({
     events: [event()],
@@ -957,6 +981,118 @@ test("output exhaustion preserves raw evidence and enters review after one extra
   await run();
   assert.equal(calls, 1);
   database.close();
+});
+
+test('output truncation splits once, persists the smaller limit, and archives every source exactly once', async () => {
+  const { database, repository } = repositoryFixture();
+  try {
+    appendCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY,
+      events: Array.from({ length: 5 }, (_, i) => event({ eventId: `split-${i}`, content: { text: `独立原话${i}` } })) });
+    const sizes = [];
+    const generator = async ({ input }) => {
+      const refs = [...input.matchAll(/^\[(M\d{4})\]/gmu)].map(match => match[1]);
+      sizes.push(refs.length);
+      if (refs.length > 2) throw Object.assign(new Error('output truncated'), { code: 'MAX_TOKENS' });
+      const sources = [...input.matchAll(/^\[(M\d{4})\].*?(独立原话\d)/gmu)];
+      return { output: { memories: sources.map(([, ref, text]) => generatedEventCandidate({ title: text,
+        content: text, subjectRole: 'user', subjectName: 'User',
+        actorRoles: [{ role: 'experiencer', actorRole: 'user', actorName: 'User', confidence: 1 }],
+        sourceRefs: [ref] })) }, usage: {} };
+    };
+    for (let i = 0; i < 3; i++) {
+      const result = await processPendingCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY, generator });
+      assert.equal(result.status, 'processed');
+      assert.equal(result.generationDiagnostics.degraded, false);
+      assert.ok(result.memoriesStored > 0, JSON.stringify(result.candidateResults));
+    }
+    assert.deepEqual(sizes, [5, 2, 2, 1]);
+    assert.equal(repository.listInputEvents(AGENT_ID, { statuses: ['pending'] }).total, 0);
+    assert.equal(repository.listInputEvents(AGENT_ID, { statuses: ['archived'] }).total, 5);
+    assert.equal(repository.listMaintenanceTasks(AGENT_ID, { taskTypes: ['long-term-extraction'] }).length, 0);
+    assert.equal(repository.listMemories(AGENT_ID, { kinds: ['utterance'], limit: 20 }).total, 5);
+    const evidence = repository.listMemories(AGENT_ID, { kinds: ['event'], limit: 20 }).items
+      .flatMap(memory => repository.getMemoryDetail(AGENT_ID, memory.id).sources.map(source => source.content));
+    assert.deepEqual([...new Set(evidence)].sort(), Array.from({ length: 5 }, (_, i) => `独立原话${i}`));
+  } finally { database.close(); }
+});
+
+test('a split limit survives database reopening and a later network failure never repeats the original large request', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'suzu-extraction-split-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'memory.db');
+  let database = openMemoryDatabase(file);
+  let repository = new MemoryRepository(database);
+  appendCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY,
+    events: Array.from({ length: 5 }, (_, i) => event({ eventId: `resume-${i}`, content: { text: `resume-source-${i}` } })) });
+  const sizes = [];
+  let failNetwork = true;
+  const generator = async ({ input }) => {
+    const refs = [...input.matchAll(/^\[(M\d{4})\]/gmu)].map(match => match[1]);
+    sizes.push(refs.length);
+    if (refs.length > 2) throw Object.assign(new Error('output truncated'), { code: 'MAX_TOKENS' });
+    if (failNetwork) { failNetwork = false; throw new Error('network unavailable'); }
+    return { output: { memories: [] }, usage: {} };
+  };
+  try {
+    await assert.rejects(processPendingCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY, generator }), /network unavailable/u);
+    assert.equal(repository.listInputEvents(AGENT_ID, { statuses: ['archived'] }).total, 0);
+    database.close();
+    database = openMemoryDatabase(file);
+    repository = new MemoryRepository(database);
+    for (let i = 0; i < 3; i++) await processPendingCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY, generator });
+    assert.deepEqual(sizes, [5, 2, 2, 2, 1]);
+    assert.equal(repository.listInputEvents(AGENT_ID, { statuses: ['archived'] }).total, 5);
+    assert.equal(repository.listMaintenanceTasks(AGENT_ID, { taskTypes: ['long-term-extraction'] }).length, 0);
+  } finally { database.close(); }
+});
+
+test('repeated subdivision stops at one whole source and only that source enters review', async () => {
+  const { database, repository } = repositoryFixture();
+  try {
+    appendCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY,
+      events: Array.from({ length: 4 }, (_, i) => event({ eventId: `single-${i}`, content: { text: `single-source-${i}` } })) });
+    const sizes = [];
+    const generator = async ({ input }) => {
+      const refs = [...input.matchAll(/^\[(M\d{4})\]/gmu)].map(match => match[1]);
+      sizes.push(refs.length);
+      if (input.includes('single-source-0')) throw Object.assign(new Error('output truncated'), { code: 'MAX_TOKENS' });
+      return { output: { memories: [] }, usage: {} };
+    };
+    for (let i = 0; i < 3; i++) await processPendingCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY, generator });
+    assert.deepEqual(sizes, [4, 2, 1, 1, 2]);
+    assert.equal(repository.listInputEvents(AGENT_ID, { statuses: ['archived'] }).total, 4);
+    const tasks = repository.listMaintenanceTasks(AGENT_ID, { taskTypes: ['long-term-extraction'] });
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].payload.eventIds.length, 1);
+    assert.equal(tasks[0].attempt_count, 1);
+  } finally { database.close(); }
+});
+
+test('a truncated repair also splits instead of silently retaining only the initially valid candidates', async () => {
+  const { database, repository } = repositoryFixture();
+  try {
+    appendCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY,
+      events: [event({ eventId: 'repair-first' }), event({ eventId: 'repair-second' })] });
+    const calls = [];
+    const generator = async ({ input, schemaName }) => {
+      calls.push(schemaName);
+      if (schemaName === 'long-term-memory-extraction-repair-v2') {
+        throw Object.assign(new Error('repair output truncated'), { code: 'MAX_TOKENS', usage: { completion_tokens: 10 } });
+      }
+      const refs = [...input.matchAll(/^\[(M\d{4})\]/gmu)].map(match => match[1]);
+      return { output: { memories: refs.length === 2
+        ? [generatedEventCandidate({ sourceRefs: ['M0001'] }), generatedEventCandidate({ sourceRefs: ['M0002'], eventDate: 'bad-date' })]
+        : [] }, usage: { completion_tokens: 5 } };
+    };
+    const first = await processPendingCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY, generator });
+    assert.equal(first.eventsProcessed, 1);
+    assert.equal(first.generationDiagnostics.degraded, false);
+    await processPendingCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY, generator });
+    assert.deepEqual(calls, ['long-term-memory-extraction-v2', 'long-term-memory-extraction-repair-v2',
+      'long-term-memory-extraction-v2', 'long-term-memory-extraction-v2']);
+    assert.equal(repository.listInputEvents(AGENT_ID, { statuses: ['archived'] }).total, 2);
+    assert.equal(repository.listMaintenanceTasks(AGENT_ID, { taskTypes: ['long-term-extraction'] }).length, 0);
+  } finally { database.close(); }
 });
 
 test("archives raw evidence and queues human review after three ordinary extraction failures", async () => {

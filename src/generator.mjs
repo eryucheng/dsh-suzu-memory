@@ -35,8 +35,20 @@ export function createDshGenerator({ llm, resolveRoute, signal, timeoutMs, maxTo
       if (chunk.type === 'finish') finished = true;
     }
     combinedSignal.throwIfAborted();
+    const usage = assembler.usage;
+    const responseInfo = { usage: usage ? {
+      input_tokens: usage.inputTokens,
+      cache_read_input_tokens: usage.cacheReadTokens || 0,
+      cache_creation_input_tokens: usage.cacheWriteTokens || 0,
+      output_tokens: usage.outputTokens,
+      ...(usage.totalTokens === undefined ? {} : { total_tokens: usage.totalTokens }),
+    } : {}, model: prepared.config.model };
     if (!finished || assembler.finish.kind !== 'stop') {
-      throw Object.assign(new Error(`记忆分析未正常完成：${assembler.finish.kind}。`), { code: 'MEMORY_GENERATION_FAILED', cause: assembler.finish });
+      const truncated = finished && assembler.finish.kind === 'max-tokens';
+      throw Object.assign(new Error(`记忆分析未正常完成：${assembler.finish.kind}。`), {
+        ...responseInfo, code: truncated ? 'MAX_TOKENS' : 'MEMORY_GENERATION_FAILED', cause: assembler.finish,
+        ...(truncated ? { diagnostics: { kind: 'output-limit', finishReason: 'max-tokens', maxOutputTokens: maxTokens } } : {}),
+      });
     }
     const text = assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('').trim()
       .replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
@@ -44,14 +56,7 @@ export function createDshGenerator({ llm, resolveRoute, signal, timeoutMs, maxTo
     try { output = JSON.parse(text); }
     catch (cause) { throw Object.assign(new Error('记忆分析没有返回有效 JSON。', { cause }), { code: 'MEMORY_OUTPUT_INVALID' }); }
     validateMemoryTaskOutput(request, output);
-    const usage = assembler.usage;
-    return { output, usage: usage ? {
-      input_tokens: usage.inputTokens,
-      cache_read_input_tokens: usage.cacheReadTokens || 0,
-      cache_creation_input_tokens: usage.cacheWriteTokens || 0,
-      output_tokens: usage.outputTokens,
-      ...(usage.totalTokens === undefined ? {} : { total_tokens: usage.totalTokens }),
-    } : {}, model: prepared.config.model };
+    return { output, ...responseInfo };
   };
   generate.supportsCombinedStateAnalysis = true;
   generate.supportsCombinedConsolidation = true;
