@@ -113,11 +113,11 @@
 
 | 主题 | 内容 |
 | --- | --- |
-| [工作机制](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#工作机制) | 记录经历、后台整理、按需召回的完整流程 |
-| [多路检索与证据展开](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#多路检索与证据展开) | `suzu_memory_search` 背后的检索算法 |
-| [人物认识的十二个维度](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#人物认识的十二个维度) | 偏好、习惯、目标、关系等认识如何区分和组织 |
-| [状态演化与来源追溯](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#状态演化与来源追溯) | 认识如何随新证据更新，原话如何追溯 |
-| [界面预览](https://github.com/eryucheng/suzu-memory/blob/6133e16d9e1e095724dd59d1ff554a068da2df63/README.md#界面预览) | 记忆审核台和三维记忆网络 |
+| [工作机制](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#工作机制) | 记录经历、后台整理、按需召回的完整流程 |
+| [多路检索与证据展开](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#多路检索与证据展开) | `suzu_memory_search` 背后的检索算法 |
+| [人物认识的十二个维度](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#人物认识的十二个维度) | 偏好、习惯、目标、关系等认识如何区分和组织 |
+| [状态演化与来源追溯](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#状态演化与来源追溯) | 认识如何随新证据更新，原话如何追溯 |
+| [界面预览](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#界面预览) | 记忆审核台和三维记忆网络 |
 
 ## 兼容性
 
