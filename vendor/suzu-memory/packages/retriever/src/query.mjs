@@ -114,6 +114,14 @@ const ENGLISH_STATE_PREFIX = new RegExp(`\\b${ENGLISH_STATE_NOUN}\\b`, 'u');
 const ENGLISH_STATE_QUESTION_PREAMBLE = new RegExp(`^(?:what|which|whose|how many|how much)\\s+${ENGLISH_STATE_PHRASE}$`, 'u');
 const ENGLISH_COMPARISON_PREFIX = /\b(?:compared (?:with|to)|versus|vs\.?)\s*$/u;
 
+function englishSubjectHead(prefix, suffix) {
+  if (!/^'(?:s)?\s/u.test(suffix)) return true;
+  // Owned state fields and "Who is X's partner?" still concern X. A
+  // following person's predicate ("does X's friend like") does not.
+  return ENGLISH_POSSESSIVE_STATE_SUFFIX.test(suffix)
+    || /\bwho\s+(?:is|was)\s*$/u.test(prefix);
+}
+
 function englishStateFocus(prefix, suffix) {
   // Classify this subject's predicate, not state words anywhere in its object
   // clause ("Caroline helped Melanie with her job" is an event).
@@ -139,6 +147,7 @@ function englishSubjectMatches(text, actor, {
     for (const index of boundedOccurrences(text, token)) {
       const prefix = text.slice(0, index);
       const suffix = text.slice(index + token.length);
+      if (!englishSubjectHead(prefix, suffix)) continue;
       const comparison = ENGLISH_COMPARISON_PREFIX.test(prefix);
       if (comparedPronouns.has(token) && !comparison) continue;
       const direct = comparison || englishQuestionSubjectPrefix(prefix) || englishDirectSubjectSuffix(suffix);
@@ -190,6 +199,7 @@ function englishSharedNameMatch(text, speaker, addressee, separators = [" and ",
     for (const index of boundedOccurrences(text, pair)) {
       const prefix = text.slice(0, index);
       const suffix = text.slice(index + pair.length);
+      if (!englishSubjectHead(prefix, suffix)) continue;
       if (
         englishQuestionSubjectPrefix(prefix)
         || englishDirectSubjectSuffix(suffix)
@@ -259,6 +269,16 @@ function acceptsChineseSubject(prefix) {
   // question, including questions whose speaker is explicitly unknown.
   return !/(?:说|讲|提到|提过|告诉|听说|表示)(?:过|了|道)?/u.test(clause)
     && !/(?:谁|哪位|哪个人)[^，。！？,;.!?]*(?:知道|听过|记得|发现|认为|觉得)/u.test(clause);
+}
+
+function chineseActorMatches(text, actor, pronoun) {
+  return [...new Set([pronoun, ...actor.names])].flatMap(token => subjectPredicateMatches(text, token)
+    .filter(match => {
+      const prefix = text.slice(0, match.index);
+      return (token === pronoun || !/[\p{L}\p{N}_]$/u.test(prefix))
+        && (!/\p{Script=Latin}/u.test(prefix) || englishSubjectPriority(prefix) > 0);
+    })
+    .map(match => ({ ...match, actor, named: token !== pronoun })));
 }
 
 export function resolveQuerySubject(query, {
@@ -380,8 +400,8 @@ export function resolveQuerySubject(query, {
     };
   }
   const chineseMatches = [
-    ...subjectPredicateMatches(content, "我").map((match) => ({ ...match, actor: speaker })),
-    ...subjectPredicateMatches(content, "你").map((match) => ({ ...match, actor: addressee })),
+    ...chineseActorMatches(content, speaker, "我"),
+    ...chineseActorMatches(content, addressee, "你"),
   ];
   const matches = chineseMatches.filter(match => !chineseMatches.some(outer => outer.speech
     && outer.index < match.index && match.index < outer.index + outer.basis.length))
@@ -416,7 +436,7 @@ export function resolveQuerySubject(query, {
       stateTime: selected.focus === "state" && historicalState
         ? "historical"
         : selected.focus === "state" ? "current" : "not-applicable",
-      reason: "explicit-subject-predicate",
+      reason: selected.named ? "configured-name-subject" : "explicit-subject-predicate",
     };
   }
   return none();
@@ -482,8 +502,10 @@ export function classifyRepresentationIntent(query) {
 
 export function classifyRelationshipQueryIntent(query) {
   const text = requestedQueryText(query);
+  if (/\b(?:relationship|marital|dating)\s+status\b/u.test(text)
+    || /(?:婚恋状态|婚姻状况|婚姻状态|感情状态)/u.test(text)) return "any";
   if (
-    /(?:(?:什么|哪种|怎样|怎么(?:样)?)(?:的)?关系|(?:当成|视为|看作|看成|算作?|属于)(?:什么|哪种)(?:关系|人)|(?:恋人|爱人|伴侣|老婆|老公|夫妻|情侣|男朋友|女朋友|男友|女友|朋友|家人)(?:关系)?(?:吗|么|呢|吧|$))/u.test(text)
+    /(?:(?:我们|咱们|你和我|我和你)(?:的)?关系(?:是(?:什么|怎样)|如何)|(?:什么|哪种|怎样|怎么(?:样)?)(?:的)?关系|(?:当成|视为|看作|看成|算作?|属于)(?:什么|哪种)(?:关系|人)|(?:恋人|爱人|伴侣|老婆|老公|夫妻|情侣|男朋友|女朋友|男友|女友|朋友|家人)(?:关系)?(?:吗|么|呢|吧|$))/u.test(text)
     || /\b(?:what (?:is|was|are|were) .{0,60}relationship|are .{1,60} (?:friends|dating|a couple|partners)|(?:am i|are you|is .{1,40}) (?:your|my|our|their|his|her) (?:friend|partner|boyfriend|girlfriend|husband|wife)|how (?:do|does) .{0,40}(?:see|regard|think of) .{0,40})\b/u.test(text)
   ) return "role";
   if (/(?:一个人的|只属于|专属|独占|排他|只能是我|只能属于|\b(?:exclusive|exclusivity|only (?:mine|yours)|belong (?:only )?to me)\b)/u.test(text)) return "exclusivity";

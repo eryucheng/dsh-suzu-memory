@@ -418,7 +418,7 @@ test("keeps LIKE fallback out of the BM25 route audit", () => {
   assert.equal(result.audit.matches[0].bestSearchRank, -0.42);
 });
 
-test("keeps a reviewed event primary while ranking independently matched source text", async () => {
+test("ranks source text and reviewed events without a storage-kind bonus", async () => {
   const { databasePath, database, repository } = temporaryDatabase();
   seedMuseumMemory(repository);
   database.close();
@@ -429,16 +429,16 @@ test("keeps a reviewed event primary while ranking independently matched source 
     now: new Date("2026-07-15T12:00:00+08:00"),
   });
   assert.equal(result.status, "ready");
-  assert.equal(result.disclosureLevel, "related-memories");
+  assert.equal(result.disclosureLevel, "evidence");
   assert.equal(result.fragments.length, 1);
-  assert.equal(result.fragments[0].memoryId, "event-museum");
+  assert.equal(result.fragments[0].memoryId, "u-user");
   assert.match(result.context, /去了科技馆并参观机器人展/u);
   assert.match(result.context, /User：我上周六去了科技馆/u);
   assert.doesNotMatch(result.context, /Agent：你还看了机器人展/u);
-  assert.deepEqual(result.graph.selectedMemoryIds, ['event-museum', 'u-user']);
+  assert.deepEqual(result.graph.selectedMemoryIds, ['u-user', 'event-museum']);
   assert.deepEqual(result.seedRouting.plannedRoutes, ["lexical", "bm25", "entity"]);
   assert.deepEqual(result.seedRouting.executedRoutes, ["lexical", "bm25", "entity"]);
-  assert.equal(result.seedRouting.primaryMemoryId, "event-museum");
+  assert.equal(result.seedRouting.primaryMemoryId, "u-user");
   assert.equal(result.candidates[0].admission, "independent");
   assert.equal(result.candidates[0].routeMatches[0].route, "lexical");
   assert.deepEqual(result.trace.metadata.seedRouting, result.seedRouting);
@@ -923,8 +923,10 @@ test("keeps the shared ordinary context budget separate from explicit evidence d
     query: "还记得那四轮连续问答吗",
   });
   assert.equal(ordinary.status, "ready");
-  assert.equal(ordinary.fragments[0].evidenceIds.length, 0);
-  assert.deepEqual(ordinary.graph.selectedMemoryIds, ['evidence-window-event']);
+  assert.equal(ordinary.fragments[0].evidenceIds.length, 4);
+  assert.deepEqual(new Set(ordinary.graph.selectedMemoryIds), new Set([
+    'evidence-window-event', ...messages.map(([id]) => id),
+  ]));
   assert.equal(
     ordinary.fragments[0].evidenceIds.every((id) => messages.some(([messageId]) => messageId === id)),
     true,
@@ -993,6 +995,24 @@ test("keeps the shared ordinary context budget separate from explicit evidence d
     ordinaryMaximum: 1,
     expandedMaximum: 3,
   });
+  for (const query of ['原话怎么说', 'What did I say?']) {
+    for (const anchor of ['evidence-window-event', 'evidence-window-u1']) {
+      for (const maximumExpandedEvidenceMessages of [0, 1, 2, 3, 4]) {
+        const bounded = await retrieveMemories({
+          databasePath, agentId: 'agent-test', query, anchorMemoryIds: [anchor],
+          options: { execution: 'inline', maximumExpandedEvidenceMessages },
+        });
+        const evidenceIds = bounded.trace.metadata.evidenceMemoryIds;
+        assert.equal(evidenceIds.length, maximumExpandedEvidenceMessages,
+          JSON.stringify({ query, anchor, maximumExpandedEvidenceMessages, evidenceIds }));
+        assert.equal(new Set(evidenceIds).size, evidenceIds.length);
+        if (maximumExpandedEvidenceMessages && anchor === 'evidence-window-u1') {
+          assert.ok(evidenceIds.includes(anchor), 'The matched utterance keeps its place within the evidence budget.');
+        }
+      }
+    }
+  }
+
 });
 
 test("retrieves only explicit challenged-by memories when counterevidence is requested", async () => {
@@ -1303,6 +1323,7 @@ test("keeps current-state correction visible without hiding evidence for the his
     agentId: "agent-test",
     kind: "event",
     layer: "episodic",
+    evidenceMode: "explicit",
     content: `Agent 当时吃到一道处理失败的鱼菜后明确表达不喜欢。${"证据补充".repeat(40)}`,
     subjectRole: "agent",
     subjectKey: "agent-test",
@@ -1994,7 +2015,7 @@ test("keeps pre-role read-only databases recallable", async () => {
     query: "记得我之前去科技馆吗",
   });
   assert.equal(result.status, "ready");
-  assert.equal(result.fragments[0].memoryId, "event-museum");
+  assert.equal(result.fragments[0].memoryId, "u-user");
   assert.equal(result.seedRouting.subjectRouting.query.role, "user");
 });
 
@@ -2346,8 +2367,8 @@ test("returns a persistable retrieval trace without writing it by default", asyn
   });
   assert.equal(result.trace.resultStatus, "ready");
   assert.equal(result.trace.queryText, "记得我之前去科技馆吗");
-  assert.deepEqual(result.trace.seedIds, ["event-museum", "u-user"]);
-  assert.deepEqual(result.trace.selectedIds, ["event-museum", "u-user"]);
+  assert.deepEqual(result.trace.seedIds, ["u-user", "event-museum"]);
+  assert.deepEqual(result.trace.selectedIds, ["u-user", "event-museum"]);
   assert.equal(result.trace.contextChars, result.context.length);
 
   const writable = openMemoryDatabase(databasePath);
@@ -2356,7 +2377,7 @@ test("returns a persistable retrieval trace without writing it by default", asyn
   `).get().count), 0);
   const writableRepository = new MemoryRepository(writable);
   const stored = writableRepository.recordRetrievalTrace(result.trace);
-  assert.deepEqual(stored.seedIds, ["event-museum", "u-user"]);
+  assert.deepEqual(stored.seedIds, ["u-user", "event-museum"]);
   assert.equal(stored.result_status, "ready");
   assert.deepEqual(stored.metadata.seedRouting, result.seedRouting);
   assert.equal(Number(writable.prepare(`
@@ -3407,11 +3428,12 @@ test("combines activation from multiple seeds at their shared graph neighbor", a
     "field-museum",
     "field-dinner",
   ]);
-  assert.deepEqual(result.graph.selectedMemoryIds, [
+  assert.equal(result.graph.selectedMemoryIds[0], 'field-museum');
+  assert.deepEqual(new Set(result.graph.selectedMemoryIds), new Set([
     "field-museum",
     "field-dinner",
     "field-weekend",
-  ]);
+  ]));
   const topicActivation = result.graph.activationField.selected
     .find((value) => value.memoryId === "field-weekend");
   assert.equal(topicActivation.sourceCount, 2);
@@ -4430,10 +4452,10 @@ test("falls back to lexical retrieval when the embedding service is unavailable"
     },
   });
   assert.equal(result.status, "ready");
-  assert.equal(result.retrievalMode, "lexical");
+  assert.equal(result.retrievalMode, "episodic-lexical");
   assert.equal(result.vector.status, "error");
   assert.match(result.vector.warning, /已退回文本检索/u);
-  assert.equal(result.fragments[0].memoryId, "event-museum");
+  assert.equal(result.fragments[0].memoryId, "u-user");
   assert.equal(result.seedRouting.routeStatus.vector, "error");
   assert.equal(result.seedRouting.routeStatus.lexical, "matched");
 });
@@ -4740,3 +4762,34 @@ test("recalls an active scoped exception only through its explicit broad-state l
   assert.match(exceptionRecall.context, /它所限定的宽泛状态：用户明确报告自己喜欢鱼类食物/u);
   assert.equal(exceptionRecall.graph.scopeCompletion.mode, "exception-with-root");
 });
+
+for (const content of ['用户以前喜欢解谜游戏。', 'The user used to like puzzle games.']) {
+  test('recalls a source statement awaiting analysis without labeling it a model impression: ' + content, async t => {
+    const fixture = temporaryDatabase();
+    const { root, databasePath, database, repository } = fixture;
+    t.after(() => {
+      const resolved = path.resolve(root);
+      assert.ok(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep));
+      assert.ok(path.basename(resolved).startsWith('suzu-retriever-'));
+      fs.rmSync(resolved, { recursive: true, force: true });
+    });
+    const source = repository.upsertSource({ agentId: 'agent-test', sourceKind: 'conversation', externalId: 'past-like',
+      speaker: 'User', content, occurredAt: '2026-07-10T12:00:00Z' });
+    repository.upsertMemory({ id: 'past-preference-statement', agentId: 'agent-test', kind: 'preference',
+      layer: 'provisional', status: 'archived', content, subjectRole: 'user', subjectKey: 'user',
+      stateFamily: 'preference', evidenceMode: 'explicit', representationLayer: 'unspecified', temporalState: 'historical',
+      metadata: { provisional: true, epistemicStatus: 'source_record' } });
+    repository.linkSource('past-preference-statement', source.id, 'evidence', { authority: 'subject_firsthand' });
+    repository.recordIngestionDecision({ agentId: 'agent-test', batchId: 'past-like', candidateIndex: 0,
+      decision: 'review', resultStatus: 'review', reasonCodes: ['state-analysis-specialist-fallback'],
+      candidate: { kind: 'preference', content }, provisionalMemoryId: 'past-preference-statement' });
+    database.close();
+    const result = await retrieveMemories({ databasePath, agentId: 'agent-test', query: '解谜游戏 puzzle games',
+      options: { includeCandidateContext: true } });
+    const recalled = result.candidates.find(candidate => candidate.memoryId === 'past-preference-statement');
+    assert.ok(recalled, JSON.stringify(result.candidates));
+    assert.match(recalled.recallContext, /主体本人陈述/);
+    assert.doesNotMatch(recalled.recallContext, /个人印象|基于关联证据的推断/);
+    assert.deepEqual(result.trace.selectedIds, []);
+  });
+}

@@ -17,6 +17,7 @@ import {
   reviseCompanionEvent,
 } from "../src/index.mjs";
 import { generateCompanionEventBatch } from "../src/processing-stages.mjs";
+import { archiveLongTermEvidence, fallbackStateAnalysisToProvisionalReview, loadLongTermExtractionSystemPrompt } from "@suzu-memory/extraction";
 
 const AGENT_ID = "companion-test";
 const IDENTITY = Object.freeze({
@@ -148,7 +149,7 @@ test("repairs one schema-valid JSON object that fails strict extraction validati
     }
     assert.match(input, /eventDate.*YYYY-MM-DD/u);
     return {
-      output: { memories: [generatedEventCandidate({ sourceRefs: ["M0001"] })] },
+      output: { results: [{ candidateIndex: 0, status: "repaired", memories: [generatedEventCandidate({ sourceRefs: ["M0001"] })] }] },
       usage: { prompt_tokens: 4, completion_tokens: 2 },
       durationMs: 5,
       requestId: "repair-request",
@@ -162,7 +163,7 @@ test("repairs one schema-valid JSON object that fails strict extraction validati
   });
   assert.deepEqual(schemas, [
     "long-term-memory-extraction-v2",
-    "long-term-memory-extraction-repair-v2",
+    "long-term-memory-extraction-repair-v3",
   ]);
   assert.equal(generated.generation.output.memories[0].eventDate, "2026-08-04");
   assert.deepEqual(generated.generation.usage, { prompt_tokens: 14, completion_tokens: 7 });
@@ -192,7 +193,7 @@ test("keeps the repair pass in the source language of the invalid candidate", as
       }
       repairPrompt = systemPrompt;
       return {
-        output: { memories: [generatedEventCandidate({ sourceRefs: ["M0001"] })] },
+        output: { results: [{ candidateIndex: 0, status: "repaired", memories: [generatedEventCandidate({ sourceRefs: ["M0001"] })] }] },
         usage: {},
       };
     },
@@ -210,7 +211,7 @@ test("retains individually valid candidates when one repair cannot satisfy domai
   const generator = async () => {
     calls += 1;
     return {
-      output: { memories: [valid, invalid] },
+      output: calls === 1 ? { memories: [valid, invalid] } : { results: [{ candidateIndex: 1, status: "repaired", memories: [invalid] }] },
       usage: { prompt_tokens: 3, completion_tokens: 2 },
       durationMs: 4,
       requestId: `request-${calls}`,
@@ -222,17 +223,17 @@ test("retains individually valid candidates when one repair cannot satisfy domai
     identity: IDENTITY,
     generator,
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
   assert.equal(generated.generation.output.memories.length, 1);
   assert.equal(generated.generation.output.memories[0].title, "有效候选");
-  assert.deepEqual(generated.generation.usage, { prompt_tokens: 6, completion_tokens: 4 });
+  assert.deepEqual(generated.generation.usage, { prompt_tokens: 12, completion_tokens: 8 });
   assert.equal(generated.generation.metadata.repaired, false);
   assert.equal(generated.generation.metadata.salvaged, true);
-  assert.equal(generated.generation.metadata.salvageSource, "initial+repair");
-  assert.equal(generated.generation.metadata.rejectedCandidates.length, 2);
+  assert.equal(generated.generation.metadata.salvageSource, "initial");
+  assert.equal(generated.generation.metadata.rejectedCandidates.length, 4);
   assert.deepEqual(
     generated.generation.metadata.rejectedCandidates.map((item) => item.stage),
-    ["initial", "repair"],
+    ["initial", "repair", "repair", "repair"],
   );
   assert.match(generated.generation.metadata.repairValidationError, /eventDate/u);
   assert.equal(generated.generation.metadata.unresolvedCandidateCount, 1);
@@ -249,17 +250,17 @@ test("never lets a repair response delete candidates that were already valid", a
     generator: async () => {
       calls += 1;
       return {
-        output: calls === 1 ? { memories: [valid, invalid] } : { memories: [] },
+        output: calls === 1 ? { memories: [valid, invalid] } : { results: [] },
         usage: {},
       };
     },
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
   assert.deepEqual(
     generated.generation.output.memories.map((candidate) => candidate.title),
     ["必须保留的有效候选"],
   );
-  assert.equal(generated.generation.metadata.repaired, true);
+  assert.equal(generated.generation.metadata.repaired, false);
   assert.equal(generated.generation.metadata.initialValidCandidateCount, 1);
   assert.equal(generated.generation.metadata.initialInvalidCandidateCount, 1);
   assert.equal(generated.generation.metadata.finalCandidateCount, 1);
@@ -267,11 +268,198 @@ test("never lets a repair response delete candidates that were already valid", a
   assert.equal(generated.generation.metadata.candidateValidationIncomplete, true);
 });
 
+for (const language of ['zh', 'en']) test('retries only omitted candidate indices: ' + language, async t => {
+  const valid = generatedEventCandidate({ title: 'Already valid', sourceRefs: ['M0001'] });
+  const first = generatedEventCandidate({ title: 'First', sourceRefs: ['M0001'] });
+  const second = generatedEventCandidate({ title: 'Second', sourceRefs: ['M0001'] });
+  const invalid = memory => { const { retentionReason, revisionAction, ...rest } = memory; return rest; };
+  const requests = [];
+  const generated = await generateCompanionEventBatch({ events: [event({ content: {
+    text: language === 'en' ? 'I went to a parade and it inspired me to help others.' : '我参加了游行，这激励我去帮助别人。',
+  } })], identity: IDENTITY, generator: async request => {
+    requests.push(request);
+    if (requests.length === 1) return { output: { memories: [valid, invalid(first), invalid(second)] }, usage: { prompt_tokens: 3 } };
+    const input = JSON.parse(request.input);
+    assert.equal(input.sourceMessages.length, 1);
+    assert.match(request.systemPrompt, new RegExp('M0001=' + language));
+    if (requests.length === 2) {
+      assert.deepEqual(input.candidates.map(item => item.candidateIndex), [1, 2]);
+      return { output: { results: [{ candidateIndex: 2, status: 'repaired', memories: [second] }] }, usage: { prompt_tokens: 2 } };
+    }
+    assert.deepEqual(input.candidates.map(item => item.candidateIndex), [1]);
+    return { output: { results: [{ candidateIndex: 1, status: 'repaired', memories: [first] }] }, usage: { prompt_tokens: 1 } };
+  } });
+  assert.equal(requests.length, 3);
+  assert.deepEqual(generated.generation.output.memories.map(item => item.title), ['Already valid', 'Second', 'First']);
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
+  assert.equal(generated.generation.metadata.repairValidCandidateCount, 2);
+  assert.equal(generated.generation.usage.prompt_tokens, 6);
+  const f = repositoryFixture();
+  t.after(() => f.database.close());
+  const archived = archiveLongTermEvidence({ repository: f.repository, agentId: AGENT_ID, identity: IDENTITY,
+    messages: generated.messages, generatedMemories: generated.generation.output.memories,
+    batchId: 'out-of-order-repair', recordedAt: '2026-08-04T03:00:00.000Z' });
+  assert.deepEqual(archived.candidateResults.map(item => item.candidateIndex), [0, 1, 2]);
+  assert.deepEqual(archived.candidateResults.map(item => item.candidate.title), ['Already valid', 'Second', 'First']);
+});
+
+for (const language of ['zh', 'en']) test('repairs one candidate into independent event and preference memories: ' + language, async t => {
+  const visit = generatedEventCandidate({ title: 'Museum visit', sourceRefs: ['M0001'],
+    subjectRole: 'user', subjectName: 'User',
+    actorRoles: [{ role: 'experiencer', actorRole: 'user', actorName: 'User', confidence: 1 }],
+    content: language === 'en' ? 'User visited the museum.' : 'User 参观了博物馆。' });
+  const preference = { ...visit, kind: 'preference', title: 'Reading preference', stateFamily: 'preference',
+    stateLabel: 'Reading', canonicalKey: 'reading', retentionReason: 'explicit_preference', temporalState: 'current',
+    content: language === 'en' ? 'User likes reading.' : 'User 喜欢阅读。' };
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ identity: IDENTITY, events: [event({ content: {
+    text: language === 'en' ? 'I visited the museum. I also like reading.' : '我参观了博物馆。我也喜欢阅读。',
+  } })], generator: async request => {
+    if (++calls === 1) return { output: { memories: [{ ...visit, kind: 'invalid-kind' }] } };
+    assert.deepEqual(JSON.parse(request.input).candidates.map(item => item.candidateIndex), [0]);
+    return { output: { results: [{ candidateIndex: 0, status: 'repaired', memories: [visit, preference] }] } };
+  } });
+  assert.equal(calls, 2);
+  assert.deepEqual(generated.generation.output.memories, [visit, preference]);
+  assert.equal(generated.generation.metadata.repairValidCandidateCount, 1);
+  assert.equal(generated.generation.metadata.finalCandidateCount, 2);
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
+  const f = repositoryFixture();
+  t.after(() => f.database.close());
+  const archived = archiveLongTermEvidence({ repository: f.repository, agentId: AGENT_ID, identity: IDENTITY,
+    messages: generated.messages, generatedMemories: generated.generation.output.memories,
+    batchId: 'split-repair', recordedAt: '2026-08-04T03:00:00.000Z' });
+  assert.deepEqual(archived.candidateResults.map(item => item.status), ['created', 'analysis_pending']);
+  assert.equal(new Set(archived.candidateResults.map(item => item.ingestionDecisionId)).size, 2);
+});
+
+test('duplicate or unrequested indices cannot stand in for another candidate', async () => {
+  const memory = generatedEventCandidate({ sourceRefs: ['M0001'] });
+  const invalid = { ...memory, eventDate: 'last week' };
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
+    generator: async request => {
+      if (++calls === 1) return { output: { memories: [invalid, invalid] } };
+      const result = index => ({ candidateIndex: index, status: 'repaired', memories: [memory] });
+      if (calls === 2) return { output: { results: [result(0), result(0), result(99)] } };
+      const input = JSON.parse(request.input);
+      if (calls === 3) {
+        assert.deepEqual(input.candidates.map(item => item.candidateIndex), [0, 1]);
+        return { output: { results: [result(0), { candidateIndex: 1, status: 'pending', reason: 'Still unresolved.' }] } };
+      }
+      assert.deepEqual(input.candidates.map(item => item.candidateIndex), [1]);
+      return { output: { results: [result(1)] } };
+    } });
+  assert.equal(calls, 4);
+  assert.equal(generated.generation.metadata.repairValidCandidateCount, 2);
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
+});
+
+test('explicit rejections are recorded and do not require another repair attempt', async () => {
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
+    generator: async () => ++calls === 1
+      ? { output: { memories: [generatedEventCandidate({ eventDate: 'not a date' })] } }
+      : { output: { results: [{ candidateIndex: 0, status: 'rejected', reason: 'The source does not support this experience.' }] } } });
+  assert.equal(calls, 2);
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
+  assert.deepEqual(generated.generation.metadata.repairRejectedCandidates,
+    [{ index: 0, reason: 'The source does not support this experience.' }]);
+});
+
+test('repair transport failure preserves valid candidates without retrying the exhausted provider', async () => {
+  const valid = generatedEventCandidate({ title: 'Keep this event' });
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
+    generator: async () => {
+      if (++calls === 1) return { output: { memories: [valid, { ...valid, eventDate: 'invalid' }] }, usage: { prompt_tokens: 5 } };
+      throw Object.assign(new Error('Provider transport exhausted.'), { code: 'MEMORY_PROVIDER_TRANSPORT_EXHAUSTED', usage: { prompt_tokens: 2 } });
+    } });
+  assert.equal(calls, 2);
+  assert.deepEqual(generated.generation.output.memories, [valid]);
+  assert.deepEqual(generated.generation.metadata.extractionRepair.candidates.map(item => item.index), [1]);
+  assert.equal(generated.generation.usage.prompt_tokens, 7);
+});
+
+test('repairs missing source references using the supplied batch sources', async () => {
+  const corrected = generatedEventCandidate({ sourceRefs: ['M0001'] });
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
+    generator: async request => {
+      if (++calls === 1) return { output: { memories: [{ ...corrected, sourceRefs: [] }] } };
+      assert.equal(JSON.parse(request.input).sourceMessages[0].ref, 'M0001');
+      return { output: { results: [{ candidateIndex: 0, status: 'repaired', memories: [corrected] }] } };
+    } });
+  assert.equal(calls, 2);
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
+});
+
+for (const language of ['zh', 'en']) test('repairs incorrect citations from the supplied source messages: ' + language, async () => {
+  const corrected = generatedEventCandidate({ sourceRefs: ['M0002'], subjectRole: 'user', subjectName: 'User',
+    actorRoles: [{ role: 'experiencer', actorRole: 'user', actorName: 'User', confidence: 1 }],
+    content: language === 'en' ? 'User visited the museum.' : 'User 参观了博物馆。' });
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ identity: IDENTITY, events: [
+    event({ eventId: 'citation-context', content: { text: language === 'en' ? 'Good morning.' : '早上好。' } }),
+    event({ eventId: 'citation-evidence', content: { text: language === 'en' ? 'I visited the museum.' : '我参观了博物馆。' } }),
+  ], generator: async request => {
+    if (++calls === 1) return { output: { memories: [{ ...corrected, sourceRefs: ['M0999'], kind: 'invalid-kind' }] } };
+    assert.deepEqual(JSON.parse(request.input).sourceMessages.map(message => message.ref), ['M0001', 'M0002']);
+    return { output: { results: [{ candidateIndex: 0, status: 'repaired', memories: [corrected] }] } };
+  } });
+  assert.equal(calls, 2);
+  assert.deepEqual(generated.generation.output.memories, [corrected]);
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
+});
+
+test('corrects a citation to supplied evidence while rejecting an unseen source', async () => {
+  const first = generatedEventCandidate({ title: 'Museum visit', sourceRefs: ['M0002'] });
+  const second = generatedEventCandidate({ title: 'Concert visit', sourceRefs: ['M0002'] });
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ identity: IDENTITY, events: [
+    event({ eventId: 'unrelated-citation', content: { text: 'Good morning.' } }),
+    event({ eventId: 'supplied-citation', content: { text: 'We visited the museum and attended a concert.' } }),
+  ], generator: async request => {
+    if (++calls === 1) return { output: { memories: [
+      { ...first, sourceRefs: ['M0001'], kind: 'invalid-kind' }, { ...second, kind: 'invalid-kind' },
+    ] } };
+    const input = JSON.parse(request.input);
+    if (calls === 2) {
+      assert.deepEqual(input.sourceMessages.map(message => message.ref), ['M0001', 'M0002']);
+      return { output: { results: [
+        { candidateIndex: 0, status: 'repaired', memories: [first] },
+        { candidateIndex: 1, status: 'repaired', memories: [{ ...second, sourceRefs: ['M0003'] }] },
+      ] } };
+    }
+    assert.deepEqual(input.candidates.map(item => item.candidateIndex), [1]);
+    assert.deepEqual(input.sourceMessages.map(message => message.ref), ['M0002']);
+    return { output: { results: [{ candidateIndex: 1, status: 'repaired', memories: [second] }] } };
+  } });
+  assert.equal(calls, 3);
+  assert.deepEqual(generated.generation.output.memories, [first, second]);
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
+});
+
+test('recovers an unparseable initial response through the same indexed repair contract', async () => {
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
+    generator: async request => {
+      if (++calls === 1) return { output: 'truncated JSON' };
+      const input = JSON.parse(request.input);
+      assert.equal(input.candidates[0].candidate, null);
+      assert.equal(input.candidates[0].rawOutput, 'truncated JSON');
+      return { output: { results: [{ candidateIndex: 0, status: 'repaired', memories: [generatedEventCandidate({ sourceRefs: ['M0001'] })] }] } };
+    } });
+  assert.equal(calls, 2);
+  assert.equal(generated.generation.output.memories.length, 1);
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
+});
+
 test('repairs each invalid candidate against its own family contract and reports complete recovery', async () => {
-  const valid = generatedEventCandidate();
-  const preference = generatedEventCandidate({ kind: 'preference', stateFamily: 'preference', stateLabel: '阅读偏好',
+  const valid = generatedEventCandidate({ sourceRefs: ['M0001'] });
+  const preference = generatedEventCandidate({ sourceRefs: ['M0001'], kind: 'preference', stateFamily: 'preference', stateLabel: '阅读偏好',
     canonicalKey: 'reading', retentionReason: 'explicit_preference' });
-  const goal = generatedEventCandidate({ kind: 'plan', stateFamily: 'goal', stateLabel: '阅读计划',
+  const goal = generatedEventCandidate({ sourceRefs: ['M0001'], kind: 'plan', stateFamily: 'goal', stateLabel: '阅读计划',
     canonicalKey: 'reading-plan', retentionReason: 'open_loop' });
   let calls = 0;
   const generated = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
@@ -280,16 +468,66 @@ test('repairs each invalid candidate against its own family contract and reports
         { ...preference, stateTarget: { objectRole: 'world', objectName: '阅读' } },
         { ...goal, kind: 'belief_state' }] }, usage: {} };
       const input = JSON.parse(request.input);
-      assert.equal(input.preservedValidCandidates, 1);
-      assert.deepEqual(input.validationErrors.map(item => [item.index, item.originalIndex]), [[0, 1], [1, 2]]);
-      assert.match(input.validationErrors[0].reason, /不适用：stateTarget/u);
-      assert.match(input.validationErrors[1].reason, /goal 允许的 kind：plan, commitment, open_loop/u);
-      return { output: { memories: [preference, goal] }, usage: {} };
+      assert.equal(input.candidates.length, 2);
+      assert.deepEqual(input.candidates.map(item => item.candidateIndex), [1, 2]);
+      assert.match(input.candidates[0].validationError, /不适用：stateTarget/u);
+      assert.match(input.candidates[1].validationError, /goal 允许的 kind：plan, commitment, open_loop/u);
+      return { output: { results: [preference, goal].map((memory, index) => ({ candidateIndex: index + 1, status: "repaired", memories: [memory] })) }, usage: {} };
     } });
   assert.equal(calls, 2);
   assert.equal(generated.generation.output.memories.length, 3);
   assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
   assert.equal(generated.generation.metadata.candidateValidationIncomplete, false);
+});
+
+for (const language of ['en', 'zh']) for (const role of ['user', 'companion']) {
+  test('stores a source-supported joint event with one speaker: ' + language + '/' + role, async t => {
+    const f = repositoryFixture();
+    t.after(() => f.database.close());
+    const ownName = role === 'user' ? 'User' : 'Companion';
+    const subjectRole = role === 'user' ? 'user' : 'agent';
+    const otherName = role === 'user' ? 'Companion' : 'User';
+    const otherRole = role === 'user' ? 'agent' : 'user';
+    const text = language === 'en' ? 'I went to the museum with you yesterday.' : '我昨天和你一起去了博物馆。';
+    const appended = appendCompanionEvents({ ...f, agentId: AGENT_ID, identity: IDENTITY,
+      events: event({ actor: { role, id: role === 'user' ? 'user' : AGENT_ID, name: ownName }, content: { text } }) });
+    const candidate = generatedEventCandidate({ subjectRole, subjectName: ownName,
+      content: ownName + ' and ' + otherName + ' went to the museum together.',
+      actorRoles: [{ role: 'experiencer', actorRole: subjectRole, actorName: ownName, confidence: 1 },
+        { role: 'participant', actorRole: otherRole, actorName: otherName, confidence: 1 }], sourceRefs: ['M0001'] });
+    let calls = 0;
+    const generated = await generateCompanionEventBatch({ events: appended.events, identity: IDENTITY,
+      generator: async () => { calls++; return { output: { memories: [candidate] } }; } });
+    assert.equal(calls, 1);
+    const archived = archiveLongTermEvidence({ repository: f.repository, agentId: AGENT_ID, identity: IDENTITY,
+      messages: generated.messages, generatedMemories: generated.generation.output.memories,
+      batchId: 'joint-event', recordedAt: '2026-08-04T03:00:00.000Z' });
+    assert.equal(archived.candidateResults[0].status, 'created');
+    const detail = f.repository.getMemoryDetail(AGENT_ID, archived.candidateResults[0].memoryId);
+    assert.equal(detail.sources[0].authority, 'subject_firsthand');
+    assert.ok(detail.roles.some(actor => actor.role === 'participant' && actor.actor_role === otherRole));
+  });
+}
+
+test('a non-state fact classification error is repaired before asking for a state key', async () => {
+  const corrected = generatedEventCandidate({ title: 'Friend adopted a child',
+    content: 'User said a friend adopted a child last year.', subjectRole: 'user', subjectName: 'User',
+    actorRoles: [{ role: 'experiencer', actorRole: 'user', actorName: 'User', confidence: 0.9 }],
+    sourceRefs: ['M0001'] });
+  const invalid = { ...corrected, kind: 'fact' };
+  let calls = 0;
+  const generated = await generateCompanionEventBatch({ events: [event({
+    content: { text: 'A friend adopted a child last year.' },
+  })], identity: IDENTITY, generator: async request => {
+    if (++calls === 1) return { output: { memories: [invalid] } };
+    const input = JSON.parse(request.input);
+    assert.match(input.candidates[0].validationError, /not_applicable 允许的 kind：event, reflection/u);
+    assert.doesNotMatch(input.candidates[0].validationError, /canonicalKey/u);
+    return { output: { results: [{ candidateIndex: 0, status: "repaired", memories: [corrected] }] } };
+  } });
+  assert.equal(calls, 2);
+  assert.equal(generated.generation.output.memories[0].kind, 'event');
+  assert.equal(generated.generation.metadata.unresolvedCandidateCount, 0);
 });
 
 test("corrects known participant roles from host identity before evidence gates", async () => {
@@ -781,7 +1019,7 @@ test("reassembles every fragment before extraction and archives one complete utt
   assert.equal(generated.messages[0].text, longText);
   assert.equal(generated.messages[0].inputEventIds.length, pending.length);
   assert.equal(generated.messages[0].logicalEvent.fragmentCount, pending.length);
-  assert.match(generated.input, new RegExp(`同一原始事件已完整重组，共${pending.length}段`, "u"));
+  assert.equal(generated.input.split(longText).length - 1, 1);
 
   const processed = await processPendingCompanionEvents({
     repository,
@@ -1105,7 +1343,7 @@ test('a truncated repair also splits instead of silently retaining only the init
     const calls = [];
     const generator = async ({ input, schemaName }) => {
       calls.push(schemaName);
-      if (schemaName === 'long-term-memory-extraction-repair-v2') {
+      if (schemaName === 'long-term-memory-extraction-repair-v3') {
         throw Object.assign(new Error('repair output truncated'), { code: 'MAX_TOKENS', usage: { completion_tokens: 10 } });
       }
       const refs = [...input.matchAll(/^\[(M\d{4})\]/gmu)].map(match => match[1]);
@@ -1117,7 +1355,7 @@ test('a truncated repair also splits instead of silently retaining only the init
     assert.equal(first.eventsProcessed, 1);
     assert.equal(first.generationDiagnostics.degraded, false);
     await processPendingCompanionEvents({ repository, agentId: AGENT_ID, identity: IDENTITY, generator });
-    assert.deepEqual(calls, ['long-term-memory-extraction-v2', 'long-term-memory-extraction-repair-v2',
+    assert.deepEqual(calls, ['long-term-memory-extraction-v2', 'long-term-memory-extraction-repair-v3',
       'long-term-memory-extraction-v2', 'long-term-memory-extraction-v2']);
     assert.equal(repository.listInputEvents(AGENT_ID, { statuses: ['archived'] }).total, 2);
     assert.equal(repository.listMaintenanceTasks(AGENT_ID, { taskTypes: ['long-term-extraction'] }).length, 0);
@@ -1396,7 +1634,7 @@ test("rolls back archival when required follow-up tasks cannot be persisted", as
   database.close();
 });
 
-test("stores review-gated personal impressions as isolated provisional memories", async () => {
+test("preserves inferred beliefs as isolated provisional evidence after analysis fallback", async () => {
   const { database, repository } = repositoryFixture();
   appendCompanionEvents({
     repository,
@@ -1412,30 +1650,33 @@ test("stores review-gated personal impressions as isolated provisional memories"
     agentId: AGENT_ID,
     identity: IDENTITY,
     memoriesOverride: [generatedEventCandidate({
-      kind: "preference",
+      kind: "belief_state",
       title: "对科技馆的兴趣",
       content: "User 似乎喜欢逛科技馆。",
       subjectRole: "user",
       subjectName: "User",
       actorRoles: [],
       canonicalKey: "preference:museum-visits",
-      stateFamily: "preference",
+      stateFamily: "belief",
+      stateTarget: { objectRole: "world", objectName: "科技馆" },
       stateLabel: "喜欢逛科技馆",
       evidenceMode: "inferred",
       temporalState: "current",
-      retentionReason: "explicit_preference",
+      retentionReason: "explicit_belief",
       eventDate: "",
       eventStart: "",
       sourceRefs: ["M0001"],
     })],
   });
-  assert.equal(result.memoriesForReview, 1);
-  assert.equal(result.candidateResults[0].status, "review");
-  assert.ok(result.candidateResults[0].provisionalMemoryId);
-  assert.deepEqual(result.candidateResults[0].reasons, ["user-memory-without-user-source"]);
+  assert.equal(result.memoriesForReview, 0);
+  assert.equal(result.candidateResults[0].status, "analysis_pending");
+  assert.equal(repository.listPendingProvisionalMemories(AGENT_ID).length, 0);
+  const request = repository.getStateAnalysisRequest(AGENT_ID, result.candidateResults[0].stateAnalysisRequestId);
+  assert.equal(request.representation_layer, "inferred");
+  const fallback = fallbackStateAnalysisToProvisionalReview({ repository, request, reason: "fixture-analysis-failure" });
   const provisional = repository.listPendingProvisionalMemories(AGENT_ID);
   assert.equal(provisional.length, 1);
-  assert.equal(provisional[0].id, result.candidateResults[0].provisionalMemoryId);
+  assert.equal(provisional[0].id, fallback.provisional.id);
   assert.equal(provisional[0].layer, "provisional");
   assert.equal(provisional[0].status, "archived");
   assert.equal(provisional[0].metadata.epistemicStatus, "agent_impression");
@@ -1528,7 +1769,7 @@ test("does not expose structurally unresolved reviews as personal impressions", 
   assert.equal(result.candidateResults[0].status, "review");
   assert.deepEqual(
     result.candidateResults[0].reasons,
-    ["retention-reason-kind-mismatch", "user-memory-without-user-source"],
+    ["retention-reason-kind-mismatch"],
   );
   assert.equal(result.candidateResults[0].provisionalMemoryId, "");
   assert.equal(repository.listPendingProvisionalMemories(AGENT_ID).length, 0);
@@ -1567,7 +1808,7 @@ test("uses the long-term extraction prompt and refuses to guess across mixed wor
       };
     },
   });
-  assert.match(receivedSystemPrompt, /world=relational/u);
+  assert.equal(receivedSystemPrompt, loadLongTermExtractionSystemPrompt());
   assert.equal(result.memoriesForReview, 1);
   assert.deepEqual(result.candidateResults[0].reasons, ["mixed-world-evidence-needs-resolution"]);
   assert.equal(repository.listMemories(AGENT_ID, { statuses: [], kinds: ["event"] }).total, 0);

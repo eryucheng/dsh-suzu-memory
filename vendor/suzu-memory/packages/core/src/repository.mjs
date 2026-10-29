@@ -1,3 +1,5 @@
+import { retirePendingMemoryMaintenanceTasks } from './maintenance-tasks.mjs';
+import { readReportedStateDraft } from "./reported-state-policy.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { DEFAULT_MEMORY_TIME_ZONE, dateKeyInTimeZone } from './calendar-time.mjs';
 import { normalizedSearchDocument, removeSearchRows } from './search-index.mjs';
@@ -4354,9 +4356,9 @@ export class MemoryRepository {
       requestIds.add(clean(run.metadata?.stateAnalysisRequestId));
     }
     if (!targetIsPrimarySubject && !targetHasStructuredRole) {
-      // Raw speech retains its real speaker. A pending identity task can bind
+      // Raw speech retains its real speaker. A pending state task can bind
       // that speech to a different analysis target without changing the archive.
-      const request = normalizedFamily === 'identity' && memory.kind === 'utterance'
+      const request = memory.kind === 'utterance'
         && memory.status === 'active' && requestIds.size === 1 && !requestIds.has('')
         ? this.getStateAnalysisRequest(normalizedAgentId, [...requestIds][0]) : null;
       const verbatimIds = new Set(memoryDetail.sources.filter(source => source.relation === 'verbatim').map(source => source.id));
@@ -6432,6 +6434,16 @@ export class MemoryRepository {
       SELECT * FROM memory_ingestion_decisions
       WHERE agent_id = ? AND batch_id = ? AND candidate_index = ?
     `).get(normalizedAgentId, normalizedBatchId, index));
+  }
+
+  getNextIngestionCandidateIndex(agentId, batchId) {
+    const normalizedAgentId = clean(agentId), normalizedBatchId = clean(batchId);
+    if (!normalizedAgentId || !normalizedBatchId) throw new Error('Reading the next ingestion index requires agentId and batchId.');
+    const row = this.database.prepare(`
+      SELECT candidate_index FROM memory_ingestion_decisions
+      WHERE agent_id = ? AND batch_id = ? ORDER BY candidate_index DESC LIMIT 1
+    `).get(normalizedAgentId, normalizedBatchId);
+    return row ? Number(row.candidate_index) + 1 : 0;
   }
 
   listIngestionDecisions(agentId, {
@@ -9510,9 +9522,7 @@ export class MemoryRepository {
       throw new Error("Affective activation decision requires an affective state for the same Agent.");
     }
     if (enabled) {
-      const claim = memory.metadata?.reportedStateDraft?.affectiveClaim
-        || memory.metadata?.affectiveClaim
-        || null;
+      const claim = readReportedStateDraft(memory).affectiveClaim;
       if (memory.status !== "active" || memory.temporal_state !== "current"
         || !clean(claim?.trigger?.key) || !clean(claim?.trigger?.label)
         || !clean(claim?.emotion?.label)
@@ -9905,6 +9915,7 @@ export class MemoryRepository {
         after = this.getMemory(memoryId);
       }
       if (deleted) {
+        retirePendingMemoryMaintenanceTasks(this, { agentId, memoryId });
         this.database.prepare(`
           DELETE FROM memory_edges
           WHERE agent_id = ? AND provenance = 'association-builder-v1'

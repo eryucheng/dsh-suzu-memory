@@ -11,10 +11,19 @@
       "expect": {
         "status": "ready",
         "recallIntent": "event",
-        "primaryMemoryIds": ["event-museum"],
-        "requiredMemoryIds": ["event-museum"],
-        "forbiddenMemoryIds": ["event-breakfast"],
-        "contextIncludes": ["科技馆", "机器人展"],
+        "primaryMemoryIds": [
+          "event-museum"
+        ],
+        "requiredMemoryIds": [
+          "event-museum"
+        ],
+        "forbiddenMemoryIds": [
+          "event-breakfast"
+        ],
+        "contextIncludes": [
+          "科技馆",
+          "机器人展"
+        ],
         "expectedSubjects": [
           {
             "memoryId": "event-museum",
@@ -39,12 +48,24 @@
         "status": "ready",
         "chainMode": "timeline",
         "chainDirection": "forward",
-        "primaryMemoryIds": ["event-museum"],
-        "requiredMemoryIds": ["event-museum", "event-dinner"],
-        "requiredPathMemoryIds": ["event-dinner"],
-        "requiredPathRelations": ["timeline_next"],
+        "primaryMemoryIds": [
+          "event-museum"
+        ],
+        "requiredMemoryIds": [
+          "event-museum",
+          "event-dinner"
+        ],
+        "requiredPathMemoryIds": [
+          "event-dinner"
+        ],
+        "requiredPathRelations": [
+          "timeline_next"
+        ],
         "requireUntruncatedActivation": true,
-        "contextIncludes": ["科技馆", "吃了晚饭"],
+        "contextIncludes": [
+          "科技馆",
+          "吃了晚饭"
+        ],
         "maximumSelectedMemories": 3
       }
     },
@@ -56,8 +77,13 @@
       "expect": {
         "status": "ready",
         "recallIntent": "utterance",
-        "primaryMemoryIds": ["utterance-user-museum"],
-        "contextIncludes": ["对方：我上周六去了科技馆", "我：你还看了机器人展"],
+        "primaryMemoryIds": [
+          "utterance-user-museum"
+        ],
+        "contextIncludes": [
+          "对方：我上周六去了科技馆",
+          "我：你还看了机器人展"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -70,8 +96,12 @@
       "expect": {
         "status": "ready",
         "retrievalMode": "date-filter",
-        "requiredMemoryIds": ["event-museum"],
-        "contextIncludes": ["科技馆"]
+        "requiredMemoryIds": [
+          "event-museum"
+        ],
+        "contextIncludes": [
+          "科技馆"
+        ]
       }
     },
     {
@@ -103,8 +133,13 @@
       "query": "你以前是不是觉得鱼很难吃",
       "expect": {
         "status": "ready",
-        "primaryMemoryIds": ["belief-fish-old"],
-        "requiredMemoryIds": ["belief-fish-old", "belief-fish-current"],
+        "primaryMemoryIds": [
+          "belief-fish-old"
+        ],
+        "requiredMemoryIds": [
+          "belief-fish-old",
+          "belief-fish-current"
+        ],
         "contextIncludes": [
           "当前状态：Agent 现在知道有些鱼很好吃",
           "过去的状态（已被后续更新）：Agent 以前觉得鱼很难吃"
@@ -119,11 +154,21 @@
       "query": "你觉得鱼很难吃吗",
       "expect": {
         "status": "ready",
-        "primaryMemoryIds": ["belief-fish-current"],
-        "requiredMemoryIds": ["belief-fish-current"],
-        "forbiddenMemoryIds": ["belief-fish-old"],
-        "contextIncludes": ["Agent 现在知道有些鱼很好吃"],
-        "contextExcludes": ["Agent 以前觉得鱼很难吃"],
+        "primaryMemoryIds": [
+          "belief-fish-current"
+        ],
+        "requiredMemoryIds": [
+          "belief-fish-current"
+        ],
+        "forbiddenMemoryIds": [
+          "belief-fish-old"
+        ],
+        "contextIncludes": [
+          "Agent 现在知道有些鱼很好吃"
+        ],
+        "contextExcludes": [
+          "Agent 以前觉得鱼很难吃"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -132,15 +177,24 @@
       "title": "旧状态依据下钻仍保留当前纠正",
       "category": "progressive-disclosure",
       "query": "有什么依据",
-      "anchorMemoryIds": ["belief-fish-old"],
+      "anchorMemoryIds": [
+        "belief-fish-old"
+      ],
       "expect": {
         "status": "ready",
         "recallIntent": "evidence",
         "retrievalMode": "continuation",
         "disclosureLevel": "evidence",
-        "primaryMemoryIds": ["belief-fish-old"],
-        "requiredMemoryIds": ["belief-fish-current", "belief-fish-old"],
-        "requiredEvidenceIds": ["event-fish-bad-meal"],
+        "primaryMemoryIds": [
+          "belief-fish-old"
+        ],
+        "requiredMemoryIds": [
+          "belief-fish-current",
+          "belief-fish-old"
+        ],
+        "requiredEvidenceIds": [
+          "event-fish-bad-meal"
+        ],
         "contextIncludes": [
           "当前状态：Agent 现在知道有些鱼很好吃",
           "过去的状态（已被后续更新）：Agent 以前觉得鱼很难吃",
@@ -155,15 +209,26 @@
       "title": "短续问只下钻上一焦点的直接证据",
       "category": "progressive-disclosure",
       "query": "有什么依据",
-      "anchorMemoryIds": ["event-museum"],
+      "anchorMemoryIds": [
+        "event-museum"
+      ],
       "expect": {
         "status": "ready",
         "recallIntent": "evidence",
         "retrievalMode": "continuation",
         "disclosureLevel": "evidence",
-        "primaryMemoryIds": ["event-museum"],
-        "requiredEvidenceIds": ["utterance-user-museum", "utterance-agent-museum"],
-        "contextIncludes": ["直接依据", "我上周六去了科技馆", "你还看了机器人展"],
+        "primaryMemoryIds": [
+          "event-museum"
+        ],
+        "requiredEvidenceIds": [
+          "utterance-user-museum",
+          "utterance-agent-museum"
+        ],
+        "contextIncludes": [
+          "直接依据",
+          "我上周六去了科技馆",
+          "你还看了机器人展"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -174,13 +239,26 @@
       "query": "我喜欢围棋吗",
       "expect": {
         "status": "ready",
-        "primaryMemoryIds": ["preference-user-go"],
-        "requiredMemoryIds": ["preference-user-go"],
-        "forbiddenMemoryIds": ["preference-agent-go"],
-        "requiredSubjectRejectedIds": ["preference-agent-go"],
-        "contextIncludes": ["用户明确报告自己喜欢围棋"],
-        "contextExcludes": ["Agent明确报告自己喜欢围棋"],
-        "maximumSelectedMemories": 1
+        "primaryMemoryIds": [
+          "preference-user-go"
+        ],
+        "requiredMemoryIds": [
+          "preference-user-go"
+        ],
+        "forbiddenMemoryIds": [
+          "preference-agent-go",
+          "utterance-agent-go"
+        ],
+        "requiredSubjectRejectedIds": [
+          "preference-agent-go"
+        ],
+        "contextIncludes": [
+          "用户明确报告自己喜欢围棋"
+        ],
+        "contextExcludes": [
+          "Agent明确报告自己喜欢围棋"
+        ],
+        "maximumSelectedMemories": 2
       }
     },
     {
@@ -191,15 +269,31 @@
       "expect": {
         "status": "ready",
         "chainMode": "associative",
-        "primaryMemoryIds": ["preference-user-go"],
-        "requiredMemoryIds": ["preference-user-go"],
-        "forbiddenMemoryIds": ["preference-agent-go"],
-        "requiredSubjectRejectedIds": ["preference-agent-go"],
-        "requiredGraphSubjectRejectedIds": ["preference-agent-go"],
-        "forbiddenPathMemoryIds": ["preference-agent-go"],
+        "primaryMemoryIds": [
+          "preference-user-go"
+        ],
+        "requiredMemoryIds": [
+          "preference-user-go"
+        ],
+        "forbiddenMemoryIds": [
+          "preference-agent-go"
+        ],
+        "requiredSubjectRejectedIds": [
+          "preference-agent-go"
+        ],
+        "requiredGraphSubjectRejectedIds": [
+          "preference-agent-go"
+        ],
+        "forbiddenPathMemoryIds": [
+          "preference-agent-go"
+        ],
         "requireUntruncatedActivation": true,
-        "contextIncludes": ["用户明确报告自己喜欢围棋"],
-        "contextExcludes": ["Agent明确报告自己喜欢围棋"],
+        "contextIncludes": [
+          "用户明确报告自己喜欢围棋"
+        ],
+        "contextExcludes": [
+          "Agent明确报告自己喜欢围棋"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -211,12 +305,24 @@
       "expect": {
         "status": "ready",
         "recallIntent": "utterance",
-        "primaryMemoryIds": ["utterance-agent-go"],
-        "requiredMemoryIds": ["utterance-agent-go"],
-        "forbiddenMemoryIds": ["utterance-user-go"],
-        "requiredSubjectRejectedIds": ["utterance-user-go"],
-        "contextIncludes": ["Agent说自己喜欢围棋"],
-        "contextExcludes": ["User说自己喜欢围棋"],
+        "primaryMemoryIds": [
+          "utterance-agent-go"
+        ],
+        "requiredMemoryIds": [
+          "utterance-agent-go"
+        ],
+        "forbiddenMemoryIds": [
+          "utterance-user-go"
+        ],
+        "requiredSubjectRejectedIds": [
+          "utterance-user-go"
+        ],
+        "contextIncludes": [
+          "Agent说自己喜欢围棋"
+        ],
+        "contextExcludes": [
+          "User说自己喜欢围棋"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -227,8 +333,12 @@
       "query": "你觉得月亮是奶酪做的吗",
       "expect": {
         "status": "no-match",
-        "forbiddenMemoryIds": ["belief-moon-orphaned"],
-        "requiredStateSuppressedIds": ["belief-moon-orphaned"],
+        "forbiddenMemoryIds": [
+          "belief-moon-orphaned"
+        ],
+        "requiredStateSuppressedIds": [
+          "belief-moon-orphaned"
+        ],
         "emptyContext": true,
         "maximumSelectedMemories": 0
       }
@@ -238,15 +348,25 @@
       "title": "邻近事件原话不能冒充直接证据",
       "category": "progressive-disclosure",
       "query": "有什么依据",
-      "anchorMemoryIds": ["event-dinner"],
+      "anchorMemoryIds": [
+        "event-dinner"
+      ],
       "expect": {
         "status": "ready",
         "recallIntent": "evidence",
         "retrievalMode": "continuation",
         "disclosureLevel": "evidence",
-        "primaryMemoryIds": ["event-dinner"],
-        "forbiddenEvidenceIds": ["utterance-user-museum", "utterance-agent-museum"],
-        "contextIncludes": ["参观结束后去吃了晚饭", "未找到与这条记忆直接关联的支持依据"],
+        "primaryMemoryIds": [
+          "event-dinner"
+        ],
+        "forbiddenEvidenceIds": [
+          "utterance-user-museum",
+          "utterance-agent-museum"
+        ],
+        "contextIncludes": [
+          "参观结束后去吃了晚饭",
+          "未找到与这条记忆直接关联的支持依据"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -255,17 +375,30 @@
       "title": "高层结论先展开直接支持事件",
       "category": "progressive-disclosure",
       "query": "有什么依据",
-      "anchorMemoryIds": ["preference-user-puzzle"],
+      "anchorMemoryIds": [
+        "preference-user-puzzle"
+      ],
       "expect": {
         "status": "ready",
         "recallIntent": "evidence",
         "retrievalMode": "continuation",
         "disclosureLevel": "evidence",
-        "primaryMemoryIds": ["preference-user-puzzle"],
-        "requiredEvidenceIds": ["event-puzzle-choice"],
-        "forbiddenEvidenceIds": ["utterance-user-puzzle-choice"],
-        "contextIncludes": ["直接依据", "用户在空闲时间主动选择玩机关解谜游戏"],
-        "contextExcludes": ["今天空下来我还是想玩机关解谜"],
+        "primaryMemoryIds": [
+          "preference-user-puzzle"
+        ],
+        "requiredEvidenceIds": [
+          "event-puzzle-choice"
+        ],
+        "forbiddenEvidenceIds": [
+          "utterance-user-puzzle-choice"
+        ],
+        "contextIncludes": [
+          "直接依据",
+          "用户在空闲时间主动选择玩机关解谜游戏"
+        ],
+        "contextExcludes": [
+          "今天空下来我还是想玩机关解谜"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -276,11 +409,17 @@
       "query": "我喜欢机关解谜游戏吗",
       "expect": {
         "status": "ready",
-        "primaryMemoryIds": ["preference-user-puzzle-reported", "preference-user-puzzle"],
-        "requiredMemoryIds": ["preference-user-puzzle-reported", "preference-user-puzzle"],
+        "primaryMemoryIds": [
+          "preference-user-puzzle-reported",
+          "preference-user-puzzle"
+        ],
+        "requiredMemoryIds": [
+          "preference-user-puzzle-reported",
+          "preference-user-puzzle"
+        ],
         "contextIncludes": [
-          "主体明确表达；不等于外部验证事实",
-          "可撤销推断；不是主体原话",
+          "主体明确表达",
+          "基于行为与多条证据的推断",
           "用户明确说自己喜欢机关解谜游戏",
           "用户对机关解谜游戏有稳定偏好"
         ],
@@ -295,11 +434,22 @@
       "expect": {
         "status": "ready",
         "recallIntent": "evidence",
-        "primaryMemoryIds": ["preference-user-puzzle"],
-        "requiredEvidenceIds": ["event-puzzle-choice"],
-        "forbiddenEvidenceIds": ["event-puzzle-reported-support"],
-        "contextIncludes": ["直接依据", "用户在空闲时间主动选择玩机关解谜游戏"],
-        "contextExcludes": ["用户在一次对话中明确说过自己喜欢机关解谜游戏"],
+        "primaryMemoryIds": [
+          "preference-user-puzzle"
+        ],
+        "requiredEvidenceIds": [
+          "event-puzzle-choice"
+        ],
+        "forbiddenEvidenceIds": [
+          "event-puzzle-reported-support"
+        ],
+        "contextIncludes": [
+          "直接依据",
+          "用户在空闲时间主动选择玩机关解谜游戏"
+        ],
+        "contextExcludes": [
+          "用户在一次对话中明确说过自己喜欢机关解谜游戏"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -308,17 +458,30 @@
       "title": "高层结论按需继续下钻到原话",
       "category": "progressive-disclosure",
       "query": "原话怎么说",
-      "anchorMemoryIds": ["preference-user-puzzle"],
+      "anchorMemoryIds": [
+        "preference-user-puzzle"
+      ],
       "expect": {
         "status": "ready",
         "recallIntent": "utterance",
         "retrievalMode": "continuation",
         "disclosureLevel": "evidence",
-        "primaryMemoryIds": ["preference-user-puzzle"],
-        "requiredEvidenceIds": ["utterance-user-puzzle-choice"],
-        "forbiddenEvidenceIds": ["event-puzzle-choice"],
-        "contextIncludes": ["相关原话", "今天空下来我还是想玩机关解谜"],
-        "contextExcludes": ["用户在空闲时间主动选择玩机关解谜游戏"],
+        "primaryMemoryIds": [
+          "preference-user-puzzle"
+        ],
+        "requiredEvidenceIds": [
+          "utterance-user-puzzle-choice"
+        ],
+        "forbiddenEvidenceIds": [
+          "event-puzzle-choice"
+        ],
+        "contextIncludes": [
+          "相关原话",
+          "今天空下来我还是想玩机关解谜"
+        ],
+        "contextExcludes": [
+          "用户在空闲时间主动选择玩机关解谜游戏"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -327,17 +490,32 @@
       "title": "显式反证只读取挑战边",
       "category": "progressive-disclosure",
       "query": "有什么反证",
-      "anchorMemoryIds": ["preference-user-puzzle"],
+      "anchorMemoryIds": [
+        "preference-user-puzzle"
+      ],
       "expect": {
         "status": "ready",
         "recallIntent": "counterevidence",
         "retrievalMode": "continuation",
         "disclosureLevel": "evidence",
-        "primaryMemoryIds": ["preference-user-puzzle"],
-        "requiredEvidenceIds": ["event-puzzle-alternative"],
-        "forbiddenEvidenceIds": ["event-puzzle-choice", "utterance-user-puzzle-choice"],
-        "contextIncludes": ["相反依据", "明确选择了别的活动"],
-        "contextExcludes": ["主动选择玩机关解谜游戏", "今天空下来我还是想玩机关解谜"],
+        "primaryMemoryIds": [
+          "preference-user-puzzle"
+        ],
+        "requiredEvidenceIds": [
+          "event-puzzle-alternative"
+        ],
+        "forbiddenEvidenceIds": [
+          "event-puzzle-choice",
+          "utterance-user-puzzle-choice"
+        ],
+        "contextIncludes": [
+          "相反依据",
+          "明确选择了别的活动"
+        ],
+        "contextExcludes": [
+          "主动选择玩机关解谜游戏",
+          "今天空下来我还是想玩机关解谜"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -346,16 +524,27 @@
       "title": "可靠性追问同时披露最强支持与反证",
       "category": "progressive-disclosure",
       "query": "这个判断可靠吗",
-      "anchorMemoryIds": ["preference-user-puzzle"],
+      "anchorMemoryIds": [
+        "preference-user-puzzle"
+      ],
       "expect": {
         "status": "ready",
         "recallIntent": "evidence-review",
         "retrievalMode": "continuation",
         "disclosureLevel": "evidence",
-        "primaryMemoryIds": ["preference-user-puzzle"],
-        "requiredEvidenceIds": ["event-puzzle-choice", "event-puzzle-alternative"],
-        "requiredSupportEvidenceIds": ["event-puzzle-choice"],
-        "requiredCounterevidenceIds": ["event-puzzle-alternative"],
+        "primaryMemoryIds": [
+          "preference-user-puzzle"
+        ],
+        "requiredEvidenceIds": [
+          "event-puzzle-choice",
+          "event-puzzle-alternative"
+        ],
+        "requiredSupportEvidenceIds": [
+          "event-puzzle-choice"
+        ],
+        "requiredCounterevidenceIds": [
+          "event-puzzle-alternative"
+        ],
         "contextIncludes": [
           "最强直接依据",
           "主动选择玩机关解谜游戏",
@@ -373,16 +562,26 @@
       "expect": {
         "status": "ready",
         "recallIntent": "evidence-review",
-        "primaryMemoryIds": ["preference-user-puzzle"],
-        "requiredSupportEvidenceIds": ["event-puzzle-choice"],
-        "requiredCounterevidenceIds": ["event-puzzle-alternative"],
-        "forbiddenEvidenceIds": ["event-puzzle-reported-support"],
+        "primaryMemoryIds": [
+          "preference-user-puzzle"
+        ],
+        "requiredSupportEvidenceIds": [
+          "event-puzzle-choice"
+        ],
+        "requiredCounterevidenceIds": [
+          "event-puzzle-alternative"
+        ],
+        "forbiddenEvidenceIds": [
+          "event-puzzle-reported-support"
+        ],
         "contextIncludes": [
-          "可撤销推断；不是主体原话",
+          "基于行为与多条证据的推断",
           "最强直接依据",
           "最强相反依据"
         ],
-        "contextExcludes": ["用户在一次对话中明确说过自己喜欢机关解谜游戏"],
+        "contextExcludes": [
+          "用户在一次对话中明确说过自己喜欢机关解谜游戏"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -391,21 +590,34 @@
       "title": "短可靠性续问从类型化表达层集合选择系统判断",
       "category": "progressive-disclosure",
       "query": "这个判断可靠吗",
-      "anchorMemoryIds": ["preference-user-puzzle-reported", "preference-user-puzzle"],
+      "anchorMemoryIds": [
+        "preference-user-puzzle-reported",
+        "preference-user-puzzle"
+      ],
       "expect": {
         "status": "ready",
         "recallIntent": "evidence-review",
         "retrievalMode": "continuation",
-        "primaryMemoryIds": ["preference-user-puzzle"],
-        "requiredSupportEvidenceIds": ["event-puzzle-choice"],
-        "requiredCounterevidenceIds": ["event-puzzle-alternative"],
-        "forbiddenEvidenceIds": ["event-puzzle-reported-support"],
+        "primaryMemoryIds": [
+          "preference-user-puzzle"
+        ],
+        "requiredSupportEvidenceIds": [
+          "event-puzzle-choice"
+        ],
+        "requiredCounterevidenceIds": [
+          "event-puzzle-alternative"
+        ],
+        "forbiddenEvidenceIds": [
+          "event-puzzle-reported-support"
+        ],
         "contextIncludes": [
-          "可撤销推断；不是主体原话",
+          "基于行为与多条证据的推断",
           "最强直接依据",
           "最强相反依据"
         ],
-        "contextExcludes": ["用户在一次对话中明确说过自己喜欢机关解谜游戏"],
+        "contextExcludes": [
+          "用户在一次对话中明确说过自己喜欢机关解谜游戏"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -414,14 +626,21 @@
       "title": "从当前状态追问以前沿换代边回到历史状态",
       "category": "state-lifecycle",
       "query": "之前呢",
-      "anchorMemoryIds": ["belief-fish-current"],
+      "anchorMemoryIds": [
+        "belief-fish-current"
+      ],
       "expect": {
         "status": "ready",
         "chainMode": "timeline",
         "chainDirection": "backward",
         "retrievalMode": "continuation",
-        "primaryMemoryIds": ["belief-fish-current"],
-        "requiredMemoryIds": ["belief-fish-old", "belief-fish-current"],
+        "primaryMemoryIds": [
+          "belief-fish-current"
+        ],
+        "requiredMemoryIds": [
+          "belief-fish-old",
+          "belief-fish-current"
+        ],
         "contextIncludes": [
           "Agent 以前觉得鱼很难吃",
           "Agent 现在知道有些鱼很好吃"
@@ -434,17 +653,29 @@
       "title": "从当前状态追问后来不能沿换代边倒退到历史",
       "category": "state-lifecycle",
       "query": "后来呢",
-      "anchorMemoryIds": ["belief-fish-current"],
+      "anchorMemoryIds": [
+        "belief-fish-current"
+      ],
       "expect": {
         "status": "ready",
         "chainMode": "timeline",
         "chainDirection": "forward",
         "retrievalMode": "continuation",
-        "primaryMemoryIds": ["belief-fish-current"],
-        "requiredMemoryIds": ["belief-fish-current"],
-        "forbiddenMemoryIds": ["belief-fish-old"],
-        "contextIncludes": ["Agent 现在知道有些鱼很好吃"],
-        "contextExcludes": ["Agent 以前觉得鱼很难吃"],
+        "primaryMemoryIds": [
+          "belief-fish-current"
+        ],
+        "requiredMemoryIds": [
+          "belief-fish-current"
+        ],
+        "forbiddenMemoryIds": [
+          "belief-fish-old"
+        ],
+        "contextIncludes": [
+          "Agent 现在知道有些鱼很好吃"
+        ],
+        "contextExcludes": [
+          "Agent 以前觉得鱼很难吃"
+        ],
         "maximumSelectedMemories": 1
       }
     },
@@ -457,19 +688,36 @@
         "status": "ready",
         "chainMode": "timeline",
         "chainDirection": "forward",
-        "primaryMemoryIds": ["event-voice-start"],
-        "requiredMemoryIds": ["event-voice-start", "event-voice-result"],
-        "forbiddenMemoryIds": ["topic-voice-project"],
-        "requiredPathMemoryIds": ["event-voice-result"],
-        "forbiddenPathMemoryIds": ["topic-voice-project"],
-        "requiredPathRelations": ["timeline_next"],
-        "forbiddenPathRelations": ["same_thread"],
+        "primaryMemoryIds": [
+          "event-voice-start"
+        ],
+        "requiredMemoryIds": [
+          "event-voice-start",
+          "event-voice-result"
+        ],
+        "forbiddenMemoryIds": [
+          "topic-voice-project"
+        ],
+        "requiredPathMemoryIds": [
+          "event-voice-result"
+        ],
+        "forbiddenPathMemoryIds": [
+          "topic-voice-project"
+        ],
+        "requiredPathRelations": [
+          "timeline_next"
+        ],
+        "forbiddenPathRelations": [
+          "same_thread"
+        ],
         "requireUntruncatedActivation": true,
         "contextIncludes": [
           "语音项目开始时先完成了声音合成",
           "语音项目后来确认只能先发送音频文件"
         ],
-        "contextExcludes": ["语音项目汇总了多次长期调试"],
+        "contextExcludes": [
+          "语音项目汇总了多次长期调试"
+        ],
         "maximumSelectedMemories": 2
       }
     }

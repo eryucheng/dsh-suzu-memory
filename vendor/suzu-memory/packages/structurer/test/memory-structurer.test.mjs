@@ -146,7 +146,8 @@ test("creates only a pending bounded subject attribution proposal", async () => 
   assert.equal(result.proposal.review_state, "pending");
   assert.equal(repository.getMemory(memory.id).subject_role, "unknown");
   assert.equal(received.schemaName, "memory-subject-attribution-v1");
-  assert.match(received.systemPrompt, /speaker.*不自动等于/u);
+  assert.match(received.systemPrompt, /speaker.*发话者/u);
+  assert.match(received.systemPrompt, /按正文确定经历者/u);
   assert.doesNotMatch(received.input, /private\/conversation/u);
   const ledger = await readUsageEvents(ledgerPath);
   assert.equal(ledger.events.length, 1);

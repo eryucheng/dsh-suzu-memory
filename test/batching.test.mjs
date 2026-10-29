@@ -14,7 +14,7 @@ async function drain(runtime, value) {
 
 test('short conversations and unchanged notifications make no analysis or history reads', async t => {
   const { ctx, adapter } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true }));
+  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true }), () => true);
   t.after(() => runtime.close());
   const value = session();
   for (let n = 1; n <= 10; n++) { turn(value, n); await drain(runtime, value); }
@@ -29,7 +29,7 @@ test('short conversations and unchanged notifications make no analysis or histor
 
 test('length threshold waits for one following round and archives each core once', async t => {
   const { ctx, adapter } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000 }));
+  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000 }), () => true);
   t.after(() => runtime.close());
   const value = session();
   turn(value, 1); await drain(runtime, value);
@@ -54,7 +54,7 @@ test('length threshold waits for one following round and archives each core once
 
 test('short messages reach the message limit and wait for a following round without early analysis', async t => {
   const { ctx, adapter } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true }));
+  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true }), () => true);
   t.after(() => runtime.close());
   const value = session();
   for (let n = 1; n <= 50; n++) {
@@ -86,7 +86,7 @@ test('a DSH output truncation splits the batch and archives every source once', 
     if (count === 1) chunks.at(-1).reason = { kind: 'max-tokens' };
     return chunks;
   });
-  const runtime = new DshMemoryRuntime(ctx, config(t));
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
   t.after(() => runtime.close());
   const value = session();
   turn(value, 1); turn(value, 2);
@@ -104,9 +104,9 @@ test('resume preserves the short tail without rereading DSH history or analyzing
   const { ctx, adapter } = await host(t);
   const options = config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000 });
   const value = session(); turn(value, 1);
-  let runtime = new DshMemoryRuntime(ctx, options);
+  let runtime = new DshMemoryRuntime(ctx, options, () => true);
   runtime.consume(value); await runtime.close();
-  runtime = new DshMemoryRuntime(ctx, options);
+  runtime = new DshMemoryRuntime(ctx, options, () => true);
   t.after(() => runtime.close());
   const read = t.mock.method(value, 'snapshotEvents', () => { throw new Error('already captured'); });
   await drain(runtime, value);
@@ -127,7 +127,7 @@ test('context eviction joins the running task and flushes the bounded tail in th
     if (call === 1) { start(); await gate; }
     return textChunks('{"memories":[]}');
   });
-  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000 }));
+  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000 }), () => true);
   t.after(() => runtime.close());
   const value = session();
   for (let n = 1; n <= 3; n++) turn(value, n);
@@ -146,7 +146,7 @@ test('context eviction joins the running task and flushes the bounded tail in th
 
 test('automatic processing can be disabled while explicit bounded maintenance remains available', async t => {
   const { ctx, adapter } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: false, archiveBatchCharacters: 1000 }));
+  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: false, archiveBatchCharacters: 1000 }), () => true);
   t.after(() => runtime.close());
   const value = session();
   for (let n = 1; n <= 5; n++) turn(value, n);
@@ -158,7 +158,7 @@ test('automatic processing can be disabled while explicit bounded maintenance re
 
 test('new messages arriving during a waiting plan are processed by the same background job', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000 }));
+  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000 }), () => true);
   t.after(() => runtime.close());
   const value = session(); turn(value, 1); turn(value, 2);
   let start, release, paused = false;
@@ -187,7 +187,7 @@ test('failed analysis retains pending content and a retry archives it once', asy
     if (call === 1) throw new Error('temporary provider failure');
     return textChunks('{"memories":[]}');
   });
-  const runtime = new DshMemoryRuntime(ctx, config(t));
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
   t.after(() => runtime.close());
   const value = session(); turn(value, 1);
   assert.equal((await runtime.maintain(value, { force: true })).status, 'completed-with-failures');
@@ -200,7 +200,7 @@ test('failed analysis retains pending content and a retry archives it once', asy
 
 test('a message larger than the full request cap is retained for review without a huge model call', async t => {
   const { ctx, adapter } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t));
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
   t.after(() => runtime.close());
   const value = session(), text = '超长原文'.repeat(25000);
   user(value, text);
@@ -209,4 +209,50 @@ test('a message larger than the full request cap is retained for review without 
   assert.equal(rows.map(row => row.content.text).join(''), text);
   assert.ok(rows.every(row => row.processing_disposition === 'quarantined'));
   assert.equal(adapter.calls.length, 0);
+});
+
+test("drains source-scoped tasks after the input tail has been archived", async t => {
+  const { ctx, adapter } = await host(t);
+  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true }), () => true);
+  t.after(() => runtime.close());
+  const value = session(); turn(value, 1);
+  await runtime.maintain(value, { force: true });
+  const entry = runtime.require(value);
+  entry.memory.withRepository(repository => {
+    const memoryIds = repository.listMemories(entry.memory.agentId, { kinds: ["utterance"] }).items.map(memory => memory.id);
+    for (let index = 0; index < 12; index++) repository.enqueueMaintenanceTask({
+      agentId: entry.memory.agentId, lane: "semantic", taskType: "retrieval-context", payload: { index, memoryIds },
+    });
+  });
+  runtime.scheduleArchive(value, { flush: true });
+  await entry.running;
+  const status = entry.memory.maintenanceStatus().taskCounts;
+  assert.equal(status["semantic:retrieval-context:completed"], 12);
+  assert.equal(status["semantic:retrieval-context:pending"], undefined);
+  assert.equal(entry.pendingEvents, 0);
+  assert.equal(entry.maintenancePending, false, "disabled embedding work must not keep the worker running");
+  const generated = adapter.calls.length;
+  const reads = t.mock.method(entry.memory, "maintenanceStatus", () => { throw new Error("unchanged queue read"); });
+  runtime.scheduleArchive(value);
+  assert.equal(reads.mock.callCount(), 0);
+  assert.equal(adapter.calls.length, generated);
+});
+
+test("stops without spinning when a queued task is not yet available", async t => {
+  const { ctx } = await host(t);
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
+  t.after(() => runtime.close());
+  const value = session(); turn(value, 1);
+  await runtime.maintain(value, { force: true });
+  const entry = runtime.require(value);
+  entry.memory.withRepository(repository => {
+    const memoryIds = repository.listMemories(entry.memory.agentId, { kinds: ["utterance"] }).items.map(memory => memory.id);
+    repository.enqueueMaintenanceTask({ agentId: entry.memory.agentId, lane: "semantic", taskType: "retrieval-context",
+      payload: { memoryIds }, availableAt: new Date(Date.now() + 60_000).toISOString() });
+  });
+  const original = entry.memory.runMaintenance.bind(entry.memory);
+  const calls = t.mock.method(entry.memory, "runMaintenance", original);
+  await runtime.maintain(value, { force: true });
+  assert.equal(calls.mock.callCount(), 2);
+  assert.equal(entry.maintenancePending, true);
 });

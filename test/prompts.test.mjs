@@ -9,17 +9,27 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import * as plugin from '../src/index.mjs';
 import BasicCompactionEngine from '@deepseek-ai/dsh-compaction-basic';
-import { SessionPrompts, CHAT_COMPACTION_PROMPT } from '../src/session-prompts.mjs';
+import { SessionSettings, CHAT_COMPACTION_PROMPT } from '../src/session-settings.mjs';
 import { DshMemoryRuntime } from '../src/runtime.mjs';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION } from '@deepseek-ai/dsh-system-prompt';
 import { host, config, textChunks, temporary } from './helpers.mjs';
 
-const preferences = (extra = {}) => ({ personaMode: 'dsh', persona: '', compactionMode: 'dsh', compactionPrompt: '', ...extra });
+const preferences = (extra = {}) => ({ memoryEnabled: true, personaMode: 'dsh', persona: '', compactionMode: 'dsh', compactionPrompt: '', ...extra });
+
+test('existing prompt files without an opt-in remain disabled and retain their persona', async t => {
+  const {ctx}=await host(t);const store=new SessionSettings(ctx,temporary(t));
+  fs.mkdirSync(store.directory,{recursive:true});
+  const {memoryEnabled,...legacy}=preferences({personaMode:'custom',persona:'Original saved persona'});
+  const text=JSON.stringify({version:1,revision:1,sessionId:'legacy',...legacy});
+  fs.writeFileSync(store.filename('legacy'),text);
+  assert.equal(store.read('legacy').memoryEnabled,false);assert.equal(store.read('legacy').persona,'Original saved persona');
+  assert.equal(fs.readFileSync(store.filename('legacy'),'utf8'),text);
+});
 
 test('prompt preferences persist independently and concurrent stale saves cannot overwrite a newer edit', async t => {
   const { ctx } = await host(t);
-  const store = new SessionPrompts(ctx, temporary(t));
+  const store = new SessionSettings(ctx, temporary(t));
   assert.equal(store.read('../one').revision, 0);
   const results = await Promise.all([
     store.save('../one', preferences({ personaMode: 'custom', persona: '你是铃。' }), 0),
@@ -42,7 +52,7 @@ test('prompt preferences persist independently and concurrent stale saves cannot
 test('unload cancels a pending prompt writer and drains its acquisition before returning', async t => {
   const { ctx } = await host(t);
   let store;
-  const fiber = ctx.plugin({ apply(child) { store = new SessionPrompts(child, temporary(t)); } });
+  const fiber = ctx.plugin({ apply(child) { store = new SessionSettings(child, temporary(t)); } });
   await fiber;
   fs.mkdirSync(store.directory, { recursive: true });
   const locked = Promise.withResolvers();
@@ -92,7 +102,7 @@ test('saved persona replaces native persona slots only in its conversation and u
   assert.ok(!JSON.stringify(adapter.calls.at(-1)).includes('铃声'));
   const read = await ctx.commands.execute(first.agent, '/suzu-memory-prompts', [], new AbortController().signal);
   assert.equal(JSON.parse(read.result.text).value.persona, value.persona);
-  await ctx.suzuMemoryPrompts.save(first.agent.id, preferences(), 1);
+  await ctx.suzuMemorySettings.save(first.agent.id, preferences(), 1);
   await say(first.agent, '继续');
   assert.ok(!adapter.calls.at(-1).messages[0].content[0].text.includes('铃声'));
   assert.match(adapter.calls.at(-1).messages[0].content[0].text, /原会话人设/);
@@ -105,7 +115,7 @@ test('saved persona replaces native persona slots only in its conversation and u
 
 test('DSH retains the authority of a separately configured complete system prompt', async t => {
   const { ctx } = await host(t);
-  const store = new SessionPrompts(ctx, temporary(t));
+  const store = new SessionSettings(ctx, temporary(t));
   await store.save('complete', preferences({ personaMode: 'custom', persona: '会话人设' }), 0);
   ctx.systemPrompt.section({ name: 'complete-fixture', order: 0, text: '预设的完整系统提示词', complete: true });
   const assembly = await ctx.systemPrompt.assemble({ agent: { session: { id: 'complete' } } });
@@ -127,7 +137,7 @@ test('native scoped compaction uses the selected template while retaining its ex
   const engine = isolated.compaction;
   const handle = await create('compact-chat');
   const agent = handle.agent;
-  await ctx.suzuMemoryPrompts.save(agent.id, preferences({ compactionMode: 'chat' }), 0);
+  await ctx.suzuMemorySettings.save(agent.id, preferences({ compactionMode: 'chat' }), 0);
   await say(agent, '上周在公园散步，约定下周再去。'.repeat(120));
   const routed = adapter.calls.at(-1);
   const signal = new AbortController().signal;
@@ -146,7 +156,7 @@ test('native scoped compaction uses the selected template while retaining its ex
   await assert.rejects(engine.compactNow(agent, signal), error => error.cause?.code === 'MAX_TOKENS');
   assert.equal(agent.session.surface.replaceGeneration, generation);
   const custom = '保留当前承诺和未完话题，只输出中文摘要。';
-  await ctx.suzuMemoryPrompts.save(agent.id, preferences({ compactionMode: 'custom', compactionPrompt: custom }), 1);
+  await ctx.suzuMemorySettings.save(agent.id, preferences({ compactionMode: 'custom', compactionPrompt: custom }), 1);
   truncated = false;
   await engine.compactNow(agent, signal);
   assert.equal(adapter.calls.at(-1).messages.at(-1).content[0].text, custom);
@@ -178,6 +188,7 @@ test('native compaction flushes a short memory tail without waiting for extracti
   adapter.resolveModel = async (provider, model) => ({ provider, id: model, name: model, context: { contextWindow: 100000 } });
   await ctx.plugin(BasicCompactionEngine, { auto: false, headroomTokens: 1000, retainTokens: 0, maxTokens: 1000 });
   const handle = await create('compact-short-tail');
+  await ctx.suzuMemorySettings.setMemoryEnabled(handle.agent.id, true, 0);
   try {
     await say(handle.agent, '上周在公园散步，约定下周再去。'.repeat(120));
     assert.equal(jobs.length, 0);

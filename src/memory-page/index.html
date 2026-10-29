@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Suzu Memory</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/memory/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="brand-symbol" aria-hidden="true"><svg width="27" height="27" viewBox="0 0 28 28" fill="none"><path d="M7 20L14 7L23 17L7 20Z" stroke="currentColor" stroke-width="1.3" opacity=".5"/><circle cx="7" cy="20" r="3" fill="currentColor"/><circle cx="14" cy="7" r="3" fill="currentColor"/><circle cx="23" cy="17" r="2.5" fill="currentColor"/></svg></span><div><strong>Suzu Memory</strong><small id="workspace-label">会话记忆工作台</small></div></div>
+    <div class="session-picker">
+      <label for="conversation" id="conversation-label">查看会话</label>
+      <div><select id="conversation" disabled><option>正在读取会话…</option></select><button id="refresh-sessions" aria-label="刷新会话列表" title="刷新会话列表">↻</button></div>
+    </div>
+    <nav aria-label="记忆页面">
+      <button id="graph-tab" aria-pressed="true">记忆图谱</button>
+      <button id="review-tab" aria-pressed="false">审核台</button>
+    </nav>
+    <span id="counts" aria-live="polite"></span>
+  </header>
+  <p id="session-message" role="status" hidden></p>
+  <main id="graph-view">
+    <div class="graph-header">
+      <div class="graph-heading"><p class="eyebrow">MEMORY BRAIN</p><h1 id="graph-title">记忆图谱</h1></div>
+      <div class="toolbar">
+        <input id="search" type="search" aria-label="查找节点" placeholder="查找人物、话题或记忆…">
+        <button id="refresh">刷新图谱</button>
+        <button id="motion" aria-pressed="true">暂停动态</button>
+      </div>
+    </div>
+    <p id="message" role="status"></p>
+    <div class="workspace">
+      <div class="stage">
+        <canvas role="img" aria-label="三维记忆节点与关联图"></canvas>
+        <div class="zoom">
+          <button data-action="in" aria-label="放大">+</button>
+          <button data-action="out" aria-label="缩小">−</button>
+          <button data-action="reset" aria-label="重置视角">↺</button>
+        </div>
+      </div>
+      <aside id="detail" hidden><button id="close-detail" aria-label="关闭详情">×</button><h2></h2><p class="content"></p><div id="sources"></div></aside>
+    </div>
+    <div class="graph-footer"><div class="legend" aria-label="节点类型"><span><i class="actor"></i><b id="legend-actors">人物</b></span><span><i class="episode"></i><b id="legend-episodes">经历</b></span><span><i class="state"></i><b id="legend-states">状态</b></span><span><i class="event"></i><b id="legend-events">事件</b></span></div><p id="hint">拖动旋转 · 滚轮缩放 · 双击回到全景；点击节点查看关联与原话。</p></div>
+    <div id="matches" aria-label="节点搜索结果"></div>
+  </main>
+  <section id="review-view" hidden><iframe title="Suzu Memory 审核台"></iframe></section>
+  <script type="module" src="/memory/app.js"></script>
+</body>
+</html>

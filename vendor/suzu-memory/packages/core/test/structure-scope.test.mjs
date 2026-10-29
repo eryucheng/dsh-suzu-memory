@@ -116,7 +116,7 @@ test('database upgrade restores proven legacy structure scopes and preserves amb
   const read = connection => connection.prepare('SELECT * FROM memory_nodes ORDER BY id').all();
   const before = read(database);
   const reviewStates = database.prepare('SELECT id,review_state FROM memory_structure_proposals ORDER BY id').all();
-  database.prepare('DELETE FROM schema_migrations WHERE version=?').run(SCHEMA_VERSION);
+  database.prepare('DELETE FROM schema_migrations WHERE name=?').run('inherit-structure-world-scope');
   database.close();
 
   const upgraded = openMemoryDatabase(databasePath);

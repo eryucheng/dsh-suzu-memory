@@ -929,9 +929,30 @@ for (const [query, expected] of [
 
 for (const [query, intent] of [
   ['Are we dating?', 'role'], ['What is our relationship?', 'role'],
+  ['我们的关系是什么？', 'role'], ['我们是什么关系？', 'role'],
+  ["What is Caroline's relationship status?", 'any'], ['What is her marital status?', 'any'],
+  ['她的感情状态如何？', 'any'], ['Caroline目前是单身还是已婚？', 'any'],
   ['Are we exclusive?', 'exclusivity'], ['Do you understand me?', 'understanding'],
   ['Do you have feelings for me?', 'affection'], ['Does Caroline love me?', 'affection'],
 ]) test(`English relationship intent: ${query}`, () => assert.equal(classifyRelationshipQueryIntent(query), intent));
+
+test('marital status questions retain ordinary relevant candidates instead of one relationship anecdote', async t => {
+  const recall = fixture(t, [
+    { id: 'genuine', content: 'Caroline says her relationships feel more genuine now. 我觉得现在的人际关系更真实。' },
+    { id: 'single', kind: 'fact', layer: 'semantic', stateFamily: 'identity', canonicalKey: 'relationship-status',
+      temporalState: 'current', content: 'Caroline is single. 我现在是单身。' },
+  ], repository => {
+    for (const id of ['genuine', 'single']) repository.upsertEmbedding({ memoryId: id, model: 'status-fixture', vector: [1, 0] });
+  });
+  for (const query of ["What is Caroline's relationship status?", '我的感情状态如何？']) {
+    const result = await recall(query, { maximumContextMemories: 5 }, {
+      embeddingProvider: async () => ({ model: 'status-fixture', vector: [1, 0] }),
+    });
+    assert.equal(result.status, 'ready');
+    assert.equal(result.seedRouting.relationshipRouting.intent, 'any');
+    assert.ok(result.graph.selectedMemoryIds.includes('single'), JSON.stringify(result.graph));
+  }
+});
 
 for (const [query, target] of [
   ['Has the dishwasher been repaired yet?', 'completed'], ['Did Melanie finish the painting?', 'completed'],
@@ -1473,4 +1494,51 @@ test('generated topic summaries are retrievable only in their source world in bo
     assert.match(result.context, /painting and camping/u);
     assert.doesNotMatch(result.context, /story-b/u);
   }
+});
+
+
+test('possessive person phrases do not replace the person whose preference is requested', async t => {
+  const recall = fixture(t, [
+    { id: 'friend-exhibitions', kind: 'preference', layer: 'semantic', stateFamily: 'preference',
+      canonicalKey: 'lena-exhibitions', subjectRole: 'other', subjectKey: 'lena', temporalState: 'current',
+      content: 'Lena likes photography exhibitions. Lena is a friend of Caroline and Melanie.' },
+    { id: 'melanie-exhibitions', kind: 'preference', layer: 'semantic', stateFamily: 'preference',
+      canonicalKey: 'melanie-exhibitions', subjectRole: 'agent', subjectKey: 'melanie', temporalState: 'current',
+      content: 'Melanie likes photography exhibitions.' },
+  ]);
+  for (const owner of ['Caroline', 'Melanie']) for (const relation of ['friend', 'sister', 'teacher']) {
+    const query = 'What does ' + owner + "'s " + relation + ' Lena like about photography exhibitions?';
+    assert.equal(resolveQuerySubject(query, perspective).matched, false, query);
+    const result = await recall(query);
+    assert.equal(result.status, 'ready', query);
+    assert.ok(result.graph.selectedMemoryIds.includes('friend-exhibitions'), query);
+    assert.ok(!result.seedRouting.subjectRouting.hardRejectedCandidateIds.includes('friend-exhibitions'), query);
+  }
+  assert.equal(resolveQuerySubject('What does Melanie’s friend Lena like?', perspective).matched, false);
+});
+
+test('configured Chinese names use the same subject constraints as pronouns and English names', async t => {
+  const configuration = { ...perspective, speakerNames: ['Caroline', '周岚'], addresseeNames: ['Melanie', '林遥'] };
+  const recall = fixture(t, [
+    { id: 'caroline-exhibitions', kind: 'preference', layer: 'semantic', stateFamily: 'preference',
+      canonicalKey: 'caroline-exhibitions', temporalState: 'current', content: '周岚喜欢摄影展览。Caroline likes photography exhibitions.' },
+    { id: 'melanie-exhibitions', kind: 'preference', layer: 'semantic', stateFamily: 'preference',
+      canonicalKey: 'melanie-exhibitions', subjectRole: 'agent', subjectKey: 'melanie', temporalState: 'current',
+      content: '林遥喜欢摄影展览。Melanie likes photography exhibitions.' },
+  ]);
+  for (const [query, key, expected] of [['周岚喜欢摄影展览吗', 'caroline', 'caroline-exhibitions'],
+    ['林遥喜欢摄影展览吗', 'melanie', 'melanie-exhibitions'],
+    ['Caroline喜欢摄影展览吗', 'caroline', 'caroline-exhibitions'],
+    ['Melanie喜欢摄影展览吗', 'melanie', 'melanie-exhibitions'],
+    ['你还记得林遥喜欢摄影展览吗', 'melanie', 'melanie-exhibitions']]) {
+    assert.equal(resolveQuerySubject(query, configuration).key, key, query);
+    const result = await recall(query, {}, { queryPerspective: configuration });
+    assert.equal(result.status, 'ready', query);
+    assert.deepEqual(result.candidates.map(item => item.memoryId), [expected], query);
+  }
+  for (const query of ['谁说林遥喜欢摄影展览', 'Who said 林遥喜欢摄影展览?',
+    '小林遥喜欢摄影展览吗', '林遥的朋友喜欢摄影展览吗']) {
+    assert.equal(resolveQuerySubject(query, configuration).matched, false, query);
+  }
+  assert.equal(resolveQuerySubject('林遥说周岚喜欢摄影展览吗', configuration).key, 'melanie');
 });

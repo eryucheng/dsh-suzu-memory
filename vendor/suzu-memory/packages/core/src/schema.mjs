@@ -1,7 +1,7 @@
 import { EVENT_SOURCE_MIGRATION } from './schema-event-sources.mjs';
 import { backfillSearchRows } from './search-index.mjs';
 import { memoryWorldsCompatible } from './ontology.mjs';
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 export const MIGRATIONS = Object.freeze([
   {
@@ -2344,5 +2344,23 @@ export const MIGRATIONS = Object.freeze([
         update.run(origin.reality, origin.world_id, origin.world_frame, repairedAt, container.id);
       }
     },
+  },
+  {
+    version: 47, name: 'inherit-reported-state-world-scope',
+    sql: `
+      UPDATE memory_nodes AS node SET reality = draft.reality
+      FROM memory_reported_state_proposals AS proposal
+      JOIN memory_nodes AS draft ON draft.id = json_extract(proposal.metadata_json, '$.semanticMemoryId')
+        AND draft.agent_id = proposal.agent_id
+        AND json_extract(draft.metadata_json, '$.stateAnalysisDraft') = 1
+        AND json_extract(draft.metadata_json, '$.stateAnalysisRequestId') = json_extract(proposal.metadata_json, '$.stateAnalysisRequestId')
+        AND draft.title = json_extract(proposal.metadata_json, '$.semanticMemorySnapshot.title')
+        AND draft.content = json_extract(proposal.metadata_json, '$.semanticMemorySnapshot.content')
+      WHERE json_extract(node.metadata_json, '$.reportedStateProposalId') = proposal.id
+        AND node.agent_id = proposal.agent_id AND node.status <> 'deleted'
+        AND proposal.review_state IN ('pending', 'accepted')
+        AND node.reality = 'real' AND draft.reality <> 'real'
+        AND node.world_id = draft.world_id AND node.world_frame = draft.world_frame;
+    `,
   },
 ]);

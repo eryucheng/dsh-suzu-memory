@@ -1,5 +1,5 @@
-import { boundedOccurrences, lexicalCoverage, lexicalScore, prepareLexicalQuery, recallCorePhrases } from "./query.mjs";
-import { maskQuotedText, utteranceStatements } from './query-text.mjs';
+import { lexicalCoverage, lexicalScore, prepareLexicalQuery, recallCorePhrases } from "./query.mjs";
+import { utteranceStatements } from './query-text.mjs';
 import { memoryCalendarDate } from './temporal-ranking.mjs';
 
 function clean(value) {
@@ -26,13 +26,6 @@ function primaryEquals(node, target) {
 
 function stateNode(node) {
   return !["", "not_applicable", "unspecified"].includes(clean(node.state_family));
-}
-
-function hasSpeakerStatement(node, statements) {
-  if (!statements.hasQuestion) return true;
-  const text = maskQuotedText(statements.text).normalize('NFKC').toLowerCase();
-  return /\b(?:i|me|my|mine|we|our|ours)\b|我|咱|自己/u.test(text)
-    || (clean(node.metadata?.speaker) && boundedOccurrences(text, node.metadata.speaker).length > 0);
 }
 
 export function buildSubjectConstraint({
@@ -218,10 +211,8 @@ function isCurrentStructuredState(node) {
     && !["", "unspecified"].includes(clean(node.representation_layer));
 }
 
-function priorContribution(node, intent, query, asksForHistoricalState, querySubject) {
+function priorContribution(node, intent, query, asksForHistoricalState, querySubject, topicRelevant) {
   let contribution = Math.min(0.05, Math.max(0, Number(node.importance)) * 0.05);
-  if (intent === "event" && node.kind !== "utterance") contribution += 0.08;
-  if (intent === "event" && node.kind === "event" && node.event_date) contribution += 0.08;
   if (intent === "utterance" && node.kind === "utterance") contribution += 0.08;
   if (intent === "evidence" && node.kind !== "utterance") contribution += 0.08;
   if (
@@ -230,6 +221,7 @@ function priorContribution(node, intent, query, asksForHistoricalState, querySub
     && querySubject.mode === "personal"
     && querySubject.focus === "state"
     && isCurrentStructuredState(node)
+    && topicRelevant
   ) contribution += 0.1;
   if (node.status === "active") contribution += 0.08;
   else if (!asksForHistoricalState(query)) contribution -= 0.12;
@@ -249,13 +241,20 @@ export function createSeedLexicalScorer(preparedQuery, { includeQuestions = fals
         [node.event_date || "", node.title || "", statements && !includeQuestions ? statements.text : node.content]
           .filter(Boolean).join("\n"),
       );
-      entry = { lexical, hasSpeakerStatement: !statements || hasSpeakerStatement(node, statements) };
+      entry = { lexical, statements };
       scores.set(node, entry);
     }
     return entry;
   };
-  return Object.assign(node => prepare(node).lexical,
-    { hasSpeakerStatement: node => prepare(node).hasSpeakerStatement });
+  return Object.assign(node => prepare(node).lexical, {
+    dialogue(node) {
+      const entry = prepare(node);
+      if (!entry.statements?.hasQuestion) return { hasQuestion: false };
+      entry.questionLexical ??= lexicalScore(preparedQuery, entry.statements.questions);
+      return { ...entry.statements, statementRelevance: lexicalCoverage(entry.lexical),
+        questionRelevance: lexicalCoverage(entry.questionLexical) };
+    },
+  });
 }
 
 export function buildOrdinarySeedCandidates({
@@ -265,6 +264,7 @@ export function buildOrdinarySeedCandidates({
   bm25Scores = new Map(),
   vectorScores = new Map(),
   entityScores = new Map(),
+  subjectOnlyEntityMemoryIds = new Set(),
   options,
   includeWeakLexical = false,
   asksForHistoricalState = () => false,
@@ -284,9 +284,6 @@ export function buildOrdinarySeedCandidates({
   for (const node of nodes) {
     if (!memoryAllowed(node, intent)) continue;
     const lexical = scoreLexical(node);
-    if (node.kind === 'utterance' && querySubject?.mode === 'personal'
-      && !['utterance', 'evidence', 'counterevidence', 'evidence-review'].includes(intent)
-      && scoreLexical.hasSpeakerStatement?.(node) === false) continue;
     const bm25 = bm25Scores.get(node.id) || null;
     const similarity = vectorScores.get(node.id) ?? Number.NEGATIVE_INFINITY;
     const entityScore = entityScores.get(node.id) || 0;
@@ -296,6 +293,12 @@ export function buildOrdinarySeedCandidates({
       vectorRoute(similarity, options),
       entityRoute(entityScore),
     ].filter(Boolean);
+    // A person's name identifies the search subject. It may admit a record,
+    // but cannot replace a match to what is being asked about that person.
+    if (preparedQuery.topicTerms?.length && subjectOnlyEntityMemoryIds.has(node.id)) {
+      routeMatches = routeMatches.map(route => route.route === 'entity'
+        ? { ...route, contribution: 0 } : route);
+    }
     const independentRoutes = routeMatches.filter((route) => route.independentlyAdmissible);
     // One text score: prefer BM25 where available. A per-memory index miss
     // must not receive a larger fallback than the indexed matches it lost to.
@@ -331,6 +334,9 @@ export function buildOrdinarySeedCandidates({
       query,
       asksForHistoricalState,
       querySubject,
+      lexical.exactPhrase || lexical.score >= Number(options.minimumLexicalScore)
+        || similarity >= Number(options.strongVectorSimilarity)
+        || Number(bm25?.normalizedScore) >= Number(options.minimumBm25CorroborationScore),
     );
     const baseScore = routeMatches.reduce((sum, route) => sum + route.contribution, 0) + prior;
     const accessibility = accessibilityAdjustments.get(node.id) || null;

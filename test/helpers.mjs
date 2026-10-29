@@ -30,6 +30,12 @@ export function textChunks(text) {
     { type: 'finish', reason: { kind: 'stop' } }];
 }
 
+export async function enableConversation(ctx, agent) {
+  const revision = ctx.suzuMemorySettings.read(agent.session.id).revision;
+  const response = await ctx.commands.execute(agent, '/suzu-memory-enable ' + JSON.stringify({ enabled: true, revision }), [], new AbortController().signal);
+  if (response.result.kind !== 'success' || !JSON.parse(response.result.text).saved) throw new Error('Fixture conversation could not enable memory');
+}
+
 export async function host(t, script = () => textChunks('{"memories":[]}')) {
   const ctx = new Context();
   t.after(() => ctx.fiber.dispose());

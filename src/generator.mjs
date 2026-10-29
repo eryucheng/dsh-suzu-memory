@@ -1,11 +1,11 @@
 import { BlockAssembler } from '@deepseek-ai/dsh-llm';
-import { assertMemoryTaskRequest, validateMemoryTaskOutput } from '@suzu-memory/service';
+import { assertMemoryTaskRequest } from '@suzu-memory/service';
 
 /** Bridges Memory's structured tasks to the host's registered model route. */
-export function createDshGenerator({ llm, resolveRoute, signal, timeoutMs, maxTokens, maximumOutputCharacters }) {
+export function createDshGenerator({ llm, resolveRoute, signal, getSignal, timeoutMs, maxTokens, maximumOutputCharacters }) {
   const generate = async request => {
     assertMemoryTaskRequest(request);
-    const combinedSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+    const combinedSignal = AbortSignal.any([signal, request.signal, getSignal?.(), AbortSignal.timeout(timeoutMs)].filter(Boolean));
     combinedSignal.throwIfAborted();
     const route = resolveRoute();
     const prepared = await llm.prepareCall({ ...route, maxTokens }, combinedSignal);
@@ -55,7 +55,7 @@ export function createDshGenerator({ llm, resolveRoute, signal, timeoutMs, maxTo
     let output;
     try { output = JSON.parse(text); }
     catch (cause) { throw Object.assign(new Error('记忆分析没有返回有效 JSON。', { cause }), { code: 'MEMORY_OUTPUT_INVALID' }); }
-    validateMemoryTaskOutput(request, output);
+    // The owning Memory task validates candidates and retains valid siblings.
     return { output, ...responseInfo };
   };
   generate.supportsCombinedStateAnalysis = true;

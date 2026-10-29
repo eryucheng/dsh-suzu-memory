@@ -1,3 +1,4 @@
+import { maintenanceWorkStatus } from '../src/index.mjs';
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -620,4 +621,22 @@ test(`semantic maintenance accepts a request-bound self report from ${subjectRol
   assert.equal(deferred.deferred[0].reason, "state-transition-requires-review");
   assert.equal(repository.getReportedStateProposal(AGENT_ID, transition.id).review_state, "pending");
   database.close();
+});
+
+
+test('work status consistently accounts for providers, accumulating tasks and completed progress', () => {
+  const status = { taskCounts: { 'semantic:event-continuity:pending': 2,
+    'semantic:structure-proposal:pending': 3, 'semantic:structure-proposal:failed': 1,
+    'semantic:retrieval-context:pending': 4, 'embedding:memory-embedding:pending': 5 },
+    structureQueue: { accumulatingTaskCount: 3 } };
+  const providers = { generator() {}, structureGenerator() {}, retrievalContextGenerator: null, embedding: null };
+  const before = maintenanceWorkStatus(status, providers);
+  assert.equal(before.pending.tasks, 4); assert.equal(before.failures, 1); assert.equal(before.deferred.tasks, 10);
+  providers.embedding = () => {};
+  const after = maintenanceWorkStatus(status, providers);
+  assert.equal(after.pending.tasks, 11); assert.equal(after.deferred.tasks, 3);
+  assert.equal(maintenanceWorkStatus(status, providers, { lane: 'embedding' }).total, 5);
+  status.taskCounts['semantic:retrieval-context:completed'] = 1;
+  const progressed = maintenanceWorkStatus(status, providers);
+  assert.equal(progressed.total, after.total); assert.equal(progressed.completed.tasks, 1);
 });

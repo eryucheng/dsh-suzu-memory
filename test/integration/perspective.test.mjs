@@ -8,7 +8,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { createMemoryService } from '@suzu-memory/service';
 import * as plugin from '../../src/index.mjs';
 import { sessionMemoryId, sourceScope } from '../../src/events.mjs';
-import { host, config, user, assistant } from '../helpers.mjs';
+import { host, config, user, assistant, enableConversation } from '../helpers.mjs';
 
 test('DSH memory tool resolves model-authored pronouns and named people against the right actors', async t => {
   const { ctx } = await host(t);
@@ -21,6 +21,7 @@ test('DSH memory tool resolves model-authored pronouns and named people against 
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('perspective-conversation'),
     agentOptions: { provider: 'test', model: 'deepseek-test' } });
   try {
+    await enableConversation(ctx, handle.agent);
     const value = handle.agent.session;
     user(value, '我喜欢吃火锅，最爱番茄锅。我答应周末陪家人去看电影。I like hotpot. I promised to watch a movie with my family.');
     assistant(value, '我不喜欢吃火锅，尤其是麻辣锅。我答应周末陪用户去看电影。I dislike hotpot. I promised to watch a movie with the user.');
@@ -40,6 +41,8 @@ test('DSH memory tool resolves model-authored pronouns and named people against 
       ['I promise to watch a movie', 'agent'],
       ['Rin likes hotpot', 'user'],
       ['Suzu likes hotpot', 'agent'],
+      ['Rin喜欢吃火锅吗', 'user'],
+      ['Suzu喜欢吃火锅吗', 'agent'],
     ]) await t.test(query, async () => {
       const result = await ctx.tools.execute({ callId: ToolCallId(`perspective-${++sequence}`),
         name: 'suzu_memory_search', arguments: { query }, agent: handle.agent, signal: new AbortController().signal });
@@ -48,6 +51,8 @@ test('DSH memory tool resolves model-authored pronouns and named people against 
       const candidateIds = text.match(/^记忆 ID：(.*)$/mu)?.[1].split('、').filter(Boolean) || [];
       assert.ok(candidateIds.includes(ids[role]), text);
       assert.ok(!candidateIds.includes(ids[role === 'user' ? 'agent' : 'user']), text);
+      const sourcePhrase = role === "user" ? "I like hotpot." : "I dislike hotpot.";
+      assert.equal(text.split(sourcePhrase).length - 1, 1, "selected source text must appear once");
     });
     await t.test('displayed recall activates memories with the default service policy', async () => {
       const states = memory.withRepository(repository => repository.listMemoryRecallReactivationStates(memory.agentId));

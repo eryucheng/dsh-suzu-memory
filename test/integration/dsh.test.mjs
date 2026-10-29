@@ -12,7 +12,7 @@ import { createMemoryService } from '@suzu-memory/service';
 import * as plugin from '../../src/index.mjs';
 import { sessionMemoryId } from '../../src/events.mjs';
 import { DshMemoryRuntime } from '../../src/runtime.mjs';
-import { host, config, textChunks, eventCandidate } from '../helpers.mjs';
+import { host, config, textChunks, eventCandidate, enableConversation } from '../helpers.mjs';
 
 test('a memory storage failure warns while DSH still creates and chats in the session', async t => {
   const { ctx } = await host(t, () => textChunks('正常回复。'));
@@ -28,6 +28,7 @@ test('a memory storage failure warns while DSH still creates and chats in the se
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('memory-storage-fault'),
     agentOptions: { provider: 'test', model: 'deepseek-test' } });
   try {
+    await enableConversation(ctx, handle.agent);
     assert.ok(warnings.length > 0);
     handle.agent.followup(createUserMessage({ content: [{ type: 'text', text: '会话仍然可以使用。' }], source: { kind: 'user' } }));
     await handle.agent.whenIdle();
@@ -60,6 +61,7 @@ test('the installed DSH services run conversation, maintenance, recall, and plug
   await fiber;
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('conversation-integration'), agentOptions: { provider: 'test', model: 'deepseek-test' } });
   const agent = handle.agent;
+  await enableConversation(ctx, agent);
   agent.followup(createUserMessage({ content: [{ type: 'text', text: '今天去了灯塔博物馆。' }], source: { kind: 'user' } }));
   await agent.whenIdle();
   const memory = createMemoryService({ dataRoot: settings.dataRoot, agentId: sessionMemoryId(agent.id), defaults: { memoryOwner: 'Assistant', primaryUserId: 'user', userName: 'User' } });
@@ -101,6 +103,7 @@ test('normal DSH short conversations make no analysis calls until explicit maint
   await ctx.plugin(AgentLoop, { agents: [] });
   await ctx.plugin(plugin, config(t, { automaticMaintenance: true }));
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('automatic-maintenance'), agentOptions: { provider: 'test', model: 'deepseek-test' } });
+  await enableConversation(ctx, handle.agent);
   handle.agent.followup(createUserMessage({ content: [{ type: 'text', text: '这是虚构测试对话。' }], source: { kind: 'user' } }));
   await handle.agent.whenIdle();
   assert.ok(!adapter.calls.some(call => call.system?.includes('JSON Schema')));
@@ -131,6 +134,7 @@ test('complete DSH turns schedule length batches while idle notifications do no 
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('length-batch-scheduling'),
     agentOptions: { provider: 'test', model: 'deepseek-test' } });
   const agent = handle.agent;
+  await enableConversation(ctx, agent);
   const memory = createMemoryService({ dataRoot: settings.dataRoot, agentId: sessionMemoryId(agent.id) });
   const say = n => agent.followup(createUserMessage({ content: [{ type: 'text', text: `${n}用户`.padEnd(400, '甲') }], source: { kind: 'user' } }));
   const analysisCalls = () => adapter.calls.filter(call => call.system?.includes('JSON Schema'));

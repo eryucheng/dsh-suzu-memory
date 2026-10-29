@@ -22,3 +22,5 @@ export {
 } from "./utterance-evidence.mjs";
 
 export { buildExtractionParticipants, resolveExtractionParticipant, normalizeExtractionParticipantRoles } from './participant-identity.mjs';
+
+export { LONG_TERM_EXTRACTION_REPAIR_SCHEMA, normalizeGeneratedExtractionRepair, parseGeneratedExtractionRepair } from './repair.mjs';

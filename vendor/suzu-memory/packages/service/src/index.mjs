@@ -17,6 +17,7 @@ import {
   currentEventSourceExecution,
   executionEventSourceView,
   ensureCompanionRelationshipStructure,
+  enqueueMemoryMaintenanceTasks,
   materializePendingMemoryStructureProposals,
   MemoryRepository,
   openMemoryDatabase,
@@ -34,10 +35,12 @@ import {
   appendCompanionEvents,
   DEFAULT_LENGTH_ARCHIVE_POLICY,
   processPendingCompanionEvents,
+  retryCompanionExtractionRepair,
   reviseCompanionEvent,
 } from "@suzu-memory/ingestion";
 import {
   inspectMaintenance,
+  maintenanceWorkStatus,
   MAINTENANCE_TASK_TYPES,
   runEmbeddingMaintenance,
   DEFAULT_MINIMUM_STRUCTURE_MEMORIES,
@@ -306,6 +309,13 @@ export class MemoryService {
         worldId: this.defaults.defaultWorldId,
         worldFrame: this.defaults.defaultWorldFrame,
       });
+      if (!this.readOnly && !this.initialized) {
+        const pending = repository.listPendingProvisionalMemories(this.agentId, { limit: 5_000 })
+          .filter(memory => memory.metadata?.reportedStateProposalId || memory.metadata?.preferenceProposalId);
+        for (const memory of pending) enqueueMemoryMaintenanceTasks({ repository, agentId: this.agentId,
+          batchId: 'pending-reported-state:' + memory.id, memoryIds: [memory.id],
+          taskTypes: [MAINTENANCE_TASK_TYPES.memoryEmbedding] });
+      }
       const pendingStructureMaterialization = this.readOnly ? null : materializePendingMemoryStructureProposals(
         repository,
         { agentId: this.agentId },
@@ -594,7 +604,7 @@ export class MemoryService {
       if (!eventIds.length) {
         throw new Error("Long-term extraction failure has no recoverable source events.");
       }
-      repository.requeueArchivedInputEventsForHumanRetry({
+      if (!current.payload.extractionRepair) repository.requeueArchivedInputEventsForHumanRetry({
         agentId: this.agentId,
         eventIds,
         retryTaskId: current.id,
@@ -603,6 +613,16 @@ export class MemoryService {
       });
       return current;
     });
+    if (task.payload.extractionRepair) {
+      const result = await this.withRepository(repository => retryCompanionExtractionRepair({
+        repository, agentId: this.agentId, task, generator, identity: this.companionIdentity(),
+        completedAt: executionTime.toISOString(), executionTime, usageLedgerPath: this.paths.usageLedgerPath,
+        reviewedBy: clean(actor) || 'human', reviewNote: reason,
+      }));
+      const remaining = result.failureReviewTask;
+      return { status: remaining ? 'retry-degraded' : 'retried', result,
+        reviewTask: remaining || this.withRepository(repository => repository.getMaintenanceTask(this.agentId, task.id), { readOnly: true }) };
+    }
     let result = null;
     let latestError = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -679,7 +699,7 @@ export class MemoryService {
     }), { sourceScope, signal });
   }
 
-  maintenanceStatus({ limit = 100, minimumStructureMemories = DEFAULT_MINIMUM_STRUCTURE_MEMORIES } = {}) {
+  maintenanceStatus({ limit = 100, minimumStructureMemories = DEFAULT_MINIMUM_STRUCTURE_MEMORIES, lane = "all" } = {}) {
     return this.withRepository((repository) => {
       const maintenance = inspectMaintenance({
         repository,
@@ -689,6 +709,7 @@ export class MemoryService {
       });
       return {
         ...maintenance,
+        work: maintenanceWorkStatus(maintenance, this.providers, { lane }),
         pendingInputEvents: repository.listInputEvents(this.agentId, {
           statuses: ["pending"],
           limit: 1,
@@ -1506,6 +1527,7 @@ export class MemoryService {
   analyzePendingState({
     maxRequests = 10,
     generator = this.providers.generator,
+    embeddingProvider = this.providers.embedding,
     snapshotOptions = {},
     reviewVersion = "",
     preferencePolicy,
@@ -1516,6 +1538,7 @@ export class MemoryService {
       repository,
       agentId: this.agentId,
       generator,
+      embeddingProvider,
       maxRequests,
       usageLedgerPath: this.paths.usageLedgerPath,
       snapshotOptions,

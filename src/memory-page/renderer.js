@@ -1,0 +1,1168 @@
+function releasePointerCapture(target, pointerId) {
+  try {
+    if (target?.hasPointerCapture?.(pointerId)) target.releasePointerCapture(pointerId);
+  } catch {
+  }
+}
+function subscribePointerCaptureRecovery(onRecover) {
+  if (typeof window === "undefined" || typeof document === "undefined") return () => {
+  };
+  const recover = () => onRecover?.();
+  const recoverWhenHidden = () => {
+    if (document.visibilityState === "hidden") recover();
+  };
+  window.addEventListener("blur", recover);
+  document.addEventListener("visibilitychange", recoverWhenHidden);
+  return () => {
+    window.removeEventListener("blur", recover);
+    document.removeEventListener("visibilitychange", recoverWhenHidden);
+  };
+}
+function searchMemoryBrainNodes(nodes, query) {
+  const normalize = (value) => String(value ?? "").trim().toLocaleLowerCase("zh-CN");
+  const needle = normalize(query);
+  if (!needle) return [];
+  return nodes.map((node) => {
+    const title = normalize(node.title);
+    const rank = title === needle ? node.graphNodeType === "actor" ? 0 : 1 : title.includes(needle) ? 2 : normalize(`${node.preview || ""}
+${node.eventDate || ""}`).includes(needle) ? 3 : -1;
+    return { node, rank };
+  }).filter((match) => match.rank >= 0).sort((left, right) => left.rank - right.rank).map((match) => match.node);
+}
+const TAU = Math.PI * 2;
+const AMBIENT_GROUP_IDLE_MIN_DURATION = 520;
+const AMBIENT_GROUP_IDLE_MAX_DURATION = 1900;
+const AMBIENT_NODE_START_MAX_DELAY = 1350;
+const AMBIENT_NODE_MIN_DURATION = 430;
+const AMBIENT_NODE_MAX_DURATION = 1260;
+const SIGNAL_TRAVEL_SPEED = 5e-4;
+const FOCUSED_GROUP_IDLE_MIN_DURATION = 620;
+const FOCUSED_GROUP_IDLE_MAX_DURATION = 1600;
+const FOCUSED_NODE_START_MAX_DELAY = 850;
+const BRAIN_AWAKENING_DURATION = 2e3;
+const BRAIN_AWAKENING_NODE_START = 140;
+const BRAIN_AWAKENING_NODE_STAGGER = 620;
+const BRAIN_AWAKENING_NODE_DURATION = 360;
+const BRAIN_AWAKENING_EDGE_START = 620;
+const BRAIN_AWAKENING_EDGE_STAGGER = 440;
+const BRAIN_AWAKENING_EDGE_DURATION = 440;
+const MEMORY_BRAIN_PALETTES = Object.freeze({
+  dark: Object.freeze({
+    brainWire: "170, 211, 247",
+    brainWireShadow: "122, 189, 245",
+    evidenceAura: "232, 251, 255",
+    evidenceCore: "222, 247, 255",
+    evidenceCoreSelected: "250, 255, 255",
+    evidenceGlow: "157, 220, 255",
+    evidenceGlowSelected: "173, 240, 255",
+    evidenceComposite: "lighter",
+    glowAlpha: 1,
+    glowBlur: 1,
+    nodeAmbientAlpha: 1,
+    nodes: Object.freeze({
+      major: Object.freeze({
+        agent: "177, 151, 255",
+        entity: "151, 207, 255",
+        episode: "87, 239, 210",
+        relationship: "255, 142, 180",
+        topic: "177, 151, 255",
+        user: "105, 218, 242"
+      }),
+      minor: Object.freeze({
+        event: "220, 246, 255",
+        intent: "99, 226, 220",
+        knowledge: "151, 207, 255",
+        legacy: "161, 176, 210",
+        reflection: "205, 185, 255"
+      }),
+      state: Object.freeze({
+        affective_association: "255, 151, 198",
+        belief: "245, 204, 139",
+        capability: "118, 192, 255",
+        condition: "108, 205, 255",
+        disposition: "155, 213, 188",
+        goal: "89, 225, 218",
+        habit: "139, 219, 190",
+        identity: "194, 169, 255",
+        preference: "255, 190, 117",
+        relationship: "255, 142, 180",
+        self_concept: "205, 167, 255",
+        value: "255, 212, 128"
+      })
+    }),
+    pulse: "248, 253, 255",
+    pulseShadow: "232, 248, 255",
+    relation: "220, 246, 255",
+    relationAlpha: 1,
+    selected: "232, 255, 249",
+    selectedRing: "187, 255, 241",
+    stateFallback: "255, 199, 128",
+    wireAlpha: 1
+  }),
+  light: Object.freeze({
+    brainWire: "84, 113, 151",
+    brainWireShadow: "69, 108, 150",
+    evidenceAura: "38, 112, 153",
+    evidenceCore: "30, 105, 148",
+    evidenceCoreSelected: "10, 75, 112",
+    evidenceGlow: "50, 132, 171",
+    evidenceGlowSelected: "24, 113, 151",
+    evidenceComposite: "source-over",
+    glowAlpha: 0.72,
+    glowBlur: 0.74,
+    nodeAmbientAlpha: 0.78,
+    nodes: Object.freeze({
+      major: Object.freeze({
+        agent: "112, 85, 185",
+        entity: "59, 111, 174",
+        episode: "12, 128, 112",
+        relationship: "190, 65, 116",
+        topic: "91, 75, 179",
+        user: "27, 119, 163"
+      }),
+      minor: Object.freeze({
+        event: "67, 98, 133",
+        intent: "20, 130, 123",
+        knowledge: "52, 107, 171",
+        legacy: "84, 101, 135",
+        reflection: "104, 77, 177"
+      }),
+      state: Object.freeze({
+        affective_association: "193, 69, 117",
+        belief: "164, 108, 35",
+        capability: "60, 105, 172",
+        condition: "47, 119, 171",
+        disposition: "51, 123, 104",
+        goal: "19, 129, 119",
+        habit: "38, 128, 102",
+        identity: "108, 76, 176",
+        preference: "178, 105, 27",
+        relationship: "190, 65, 116",
+        self_concept: "120, 80, 176",
+        value: "174, 112, 25"
+      })
+    }),
+    pulse: "33, 116, 142",
+    pulseShadow: "65, 142, 168",
+    relation: "65, 98, 135",
+    relationAlpha: 1.35,
+    selected: "6, 101, 99",
+    selectedRing: "0, 135, 125",
+    stateFallback: "182, 110, 28",
+    wireAlpha: 1.16
+  })
+});
+function memoryBrainPalette(theme) {
+  return theme === "light" ? MEMORY_BRAIN_PALETTES.light : MEMORY_BRAIN_PALETTES.dark;
+}
+function currentMemoryBrainTheme() {
+  return typeof document !== "undefined" && document.documentElement?.dataset?.theme === "light" ? "light" : "dark";
+}
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, Number(value)));
+}
+function nearestAngle(target, current) {
+  return current + Math.atan2(Math.sin(target - current), Math.cos(target - current));
+}
+function rotatePoint(point, rotationX, rotationY) {
+  const cosY = Math.cos(rotationY);
+  const sinY = Math.sin(rotationY);
+  const x = point.x * cosY - point.z * sinY;
+  const zAfterY = point.x * sinY + point.z * cosY;
+  const cosX = Math.cos(rotationX);
+  const sinX = Math.sin(rotationX);
+  return {
+    x,
+    y: point.y * cosX - zAfterY * sinX,
+    z: point.y * sinX + zAfterY * cosX
+  };
+}
+function brainSurface(side, theta, phi, ripple = 0) {
+  const vertical = Math.sin(theta) * Math.cos(phi);
+  const depth = Math.sin(theta) * Math.sin(phi);
+  const lowerTaper = vertical < 0 ? 0.82 + (vertical + 1) * 0.13 : 1;
+  const rearTaper = depth < 0 ? 0.92 : 1.03;
+  const frontalLift = Math.max(0, depth) * Math.max(0, vertical) * 0.08;
+  const wave = 1 + Math.sin(phi * 3.2 + theta * 4.6) * ripple;
+  return {
+    x: side * (0.065 + Math.cos(theta) * 1.02 * wave * lowerTaper),
+    y: 0.06 + vertical * 0.84 * wave * lowerTaper + frontalLift,
+    z: depth * 1.08 * wave * rearTaper
+  };
+}
+function cerebellumSurface(side, theta, phi) {
+  const wave = 1 + Math.sin(phi * 5 + theta * 3) * 0.035;
+  return {
+    x: side * (0.08 + Math.cos(theta) * 0.44 * wave),
+    y: -0.59 + Math.sin(theta) * Math.cos(phi) * 0.31 * wave,
+    z: -0.55 + Math.sin(theta) * Math.sin(phi) * 0.42 * wave
+  };
+}
+function buildBrainWireframe() {
+  const polylines = [];
+  for (const side of [-1, 1]) {
+    for (const theta of [0.18, 0.62, 1.12, 1.48]) {
+      const points = [];
+      for (let step = 0; step <= 72; step += 1) {
+        points.push(brainSurface(side, theta, step / 72 * TAU, 0.016));
+      }
+      polylines.push({ points, strength: theta === 1.48 ? 0.9 : 0.26 });
+    }
+    for (let fold = 0; fold < 27; fold += 1) {
+      const basePhi = fold / 27 * TAU;
+      const points = [];
+      for (let step = 2; step <= 28; step += 1) {
+        const theta = 0.08 + step / 30 * Math.PI * 0.5;
+        const phi = basePhi + Math.sin(step * 0.76 + fold * 1.41) * 0.105 + Math.cos(step * 0.29 + fold) * 0.036;
+        points.push(brainSurface(
+          side,
+          theta,
+          phi,
+          0.026
+        ));
+      }
+      polylines.push({ points, strength: 0.34 });
+    }
+    for (let fold = 0; fold < 13; fold += 1) {
+      const baseTheta = 0.28 + fold / 13 * 1.02;
+      const startPhi = fold * 0.61 % 1 * TAU;
+      const points = [];
+      for (let step = 0; step <= 22; step += 1) {
+        const progress = step / 22;
+        const theta = baseTheta + Math.sin(progress * Math.PI * 3 + fold) * 0.085;
+        const phi = startPhi + (progress - 0.5) * 1.15;
+        points.push(brainSurface(side, theta, phi, 0.02));
+      }
+      polylines.push({ points, strength: 0.23 });
+    }
+    for (let fold = 0; fold < 8; fold += 1) {
+      const phi = fold / 8 * TAU;
+      const points = [];
+      for (let step = 2; step <= 17; step += 1) {
+        points.push(cerebellumSurface(
+          side,
+          step / 18 * Math.PI * 0.5,
+          phi + Math.sin(step * 0.9 + fold) * 0.055
+        ));
+      }
+      polylines.push({ points, strength: 0.3 });
+    }
+  }
+  polylines.push({
+    strength: 0.58,
+    points: Array.from({ length: 29 }, (_, index) => {
+      const progress = index / 28;
+      return {
+        x: -0.055,
+        y: 0.13 + Math.sin(progress * Math.PI) * 0.77,
+        z: -0.92 + progress * 1.88
+      };
+    })
+  });
+  polylines.push({
+    strength: 0.58,
+    points: Array.from({ length: 29 }, (_, index) => {
+      const progress = index / 28;
+      return {
+        x: 0.055,
+        y: 0.13 + Math.sin(progress * Math.PI) * 0.77,
+        z: -0.92 + progress * 1.88
+      };
+    })
+  });
+  for (const side of [-1, 1]) {
+    polylines.push({
+      strength: 0.42,
+      points: Array.from({ length: 18 }, (_, index) => {
+        const progress = index / 17;
+        return {
+          x: side * (0.07 + progress * 0.055),
+          y: -0.63 - progress * 0.38,
+          z: -0.23 - progress * 0.13
+        };
+      })
+    });
+  }
+  return polylines;
+}
+function relationColor(_edge, alpha, palette) {
+  return `rgba(${palette.relation}, ${alpha})`;
+}
+function nodePalette(node, palette) {
+  if (node.visualTier === "major") {
+    return palette.nodes.major[node.visualFamily] || palette.nodes.major.topic;
+  }
+  if (node.visualTier === "state") {
+    return palette.nodes.state[node.stateFamily] || palette.stateFallback;
+  }
+  return palette.nodes.minor[node.visualFamily] || palette.nodes.minor.event;
+}
+function nodeBaseRadius(node) {
+  const importance = clamp(node.importance, 0, 1);
+  if (node.visualTier === "major") {
+    const memberWeight = clamp(Math.log2(1 + Number(node.memberCount || 0)) / 4, 0, 1);
+    return 1.7 + importance * 0.2 + memberWeight * 0.1;
+  }
+  if (node.kind === "utterance") return 0.5 + importance * 0.3;
+  return 1.3 + importance * 0.3;
+}
+function memoryBrainEdgeMode(edge, {
+  selectedId = "",
+  ambientStrength = 0
+} = {}) {
+  if (selectedId && (edge?.source === selectedId || edge?.target === selectedId)) {
+    return "direct";
+  }
+  if (!selectedId && Number(ambientStrength) > 0) return "ambient";
+  if (!selectedId && edge?.structural) return "structural";
+  return "hidden";
+}
+function stableHash(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+function squaredDistance(left, right) {
+  const x = left.x - right.x;
+  const y = left.y - right.y;
+  const z = left.z - right.z;
+  return x * x + y * y + z * z;
+}
+function edgeSignalDuration(source, target) {
+  if (!source?.position || !target?.position) return 1;
+  return Math.max(1, Math.round(Math.sqrt(squaredDistance(source.position, target.position)) / SIGNAL_TRAVEL_SPEED));
+}
+function hashUnit(value, salt = "") {
+  return stableHash(`${salt}${value}`) / 4294967295;
+}
+function easeOutCubic(progress) {
+  const clamped = clamp(progress, 0, 1);
+  return 1 - (1 - clamped) ** 3;
+}
+function nodeAwakeningTiming(node) {
+  const id = String(node?.id || node?.title || "node");
+  const tierDelay = node?.visualTier === "major" ? 0 : node?.visualTier === "state" ? 110 : 230;
+  return {
+    start: BRAIN_AWAKENING_NODE_START + tierDelay + hashUnit(id, "brain-awakening-node") * BRAIN_AWAKENING_NODE_STAGGER,
+    duration: BRAIN_AWAKENING_NODE_DURATION + hashUnit(id, "brain-awakening-node-duration") * 120
+  };
+}
+function nodeAwakeningProgress(node, age) {
+  const timing = nodeAwakeningTiming(node);
+  return easeOutCubic((age - timing.start) / timing.duration);
+}
+function edgeAwakeningProgress(edge, source, target, age) {
+  const sourceTiming = nodeAwakeningTiming(source);
+  const targetTiming = nodeAwakeningTiming(target);
+  const id = String(edge?.id || `${edge?.source || "source"}:${edge?.target || "target"}`);
+  const start = Math.max(
+    BRAIN_AWAKENING_EDGE_START + hashUnit(id, "brain-awakening-edge") * BRAIN_AWAKENING_EDGE_STAGGER,
+    sourceTiming.start + sourceTiming.duration * 0.66,
+    targetTiming.start + targetTiming.duration * 0.66
+  );
+  return easeOutCubic((age - start) / BRAIN_AWAKENING_EDGE_DURATION);
+}
+function evidenceStarPosition(parent, source, index, total) {
+  const sourceId = String(source?.id || source?.external_id || index);
+  const count = Math.max(1, total);
+  const angle = index / count * TAU + hashUnit(sourceId, "evidence-angle") * 0.82;
+  const layer = Math.floor(index / 7);
+  const radius = 0.15 + layer * 0.08 + hashUnit(sourceId, "evidence-radius") * 0.08;
+  const vertical = (hashUnit(sourceId, "evidence-y") - 0.5) * 0.32;
+  const depth = (hashUnit(sourceId, "evidence-z") - 0.5) * 0.28;
+  return {
+    x: parent.x + Math.cos(angle) * radius,
+    y: parent.y + Math.sin(angle) * radius * 0.74 + vertical,
+    z: parent.z + depth
+  };
+}
+function createEvidenceStars(parent, sources) {
+  const uniqueSources = [...new Map((Array.isArray(sources) ? sources : []).filter((source) => source && typeof source === "object").map((source, index) => [String(source.id || source.external_id || `source-${index}`), source])).values()];
+  return uniqueSources.map((source, index) => ({
+    id: `evidence:${String(source.id || source.external_id || index)}`,
+    source,
+    position: evidenceStarPosition(parent, source, index, uniqueSources.length),
+    radius: 0.5 + clamp(Number(source.evidence_strength) || 0, 0, 1) * 0.3
+  }));
+}
+function evidenceTwinkle(evidenceId, time) {
+  const duration = 3800 + hashUnit(evidenceId, "evidence-twinkle-duration") * 3400;
+  const phase = hashUnit(evidenceId, "evidence-twinkle-phase") * TAU;
+  return Math.pow((Math.sin(time / duration * TAU + phase) + 1) * 0.5, 1.45);
+}
+function randomInteger(minimum, maximum) {
+  return Math.floor(Math.random() * (maximum - minimum + 1)) + minimum;
+}
+function shuffle(items) {
+  const result = [...items];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInteger(0, index);
+    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+  }
+  return result;
+}
+function ambientPulse(groupAge, activityOrActivities) {
+  const activities = Array.isArray(activityOrActivities) ? activityOrActivities : activityOrActivities ? [activityOrActivities] : [];
+  let strongest = { progress: 0, strength: 0 };
+  for (const activity of activities) {
+    const elapsed = groupAge - activity.start;
+    if (elapsed <= 0 || elapsed >= activity.duration) continue;
+    const progress = elapsed / activity.duration;
+    const strength = Math.pow(Math.sin(progress * Math.PI), 1.45);
+    if (strength > strongest.strength) strongest = { progress, strength };
+  }
+  return strongest;
+}
+function createAmbientGroup(nodes, adjacency, nodeById, groupIndex) {
+  const candidates = nodes.filter((node) => node.position && (adjacency.get(node.id)?.length || 0) > 0);
+  const fallbackCandidates = candidates.length ? candidates : nodes.filter((node) => node.position);
+  const groupSize = Math.min(
+    fallbackCandidates.length,
+    randomInteger(3, Math.min(6, Math.max(3, Math.ceil(Math.sqrt(fallbackCandidates.length)) + 2)))
+  );
+  const selected = [];
+  while (selected.length < groupSize) {
+    let choice = null;
+    for (const candidate of shuffle(fallbackCandidates).slice(0, Math.min(8, fallbackCandidates.length))) {
+      if (selected.includes(candidate)) continue;
+      const separation = selected.length ? Math.min(...selected.map((node) => squaredDistance(candidate.position, node.position))) : 0;
+      const score = Math.random() * 0.86 + (selected.length ? Math.min(1, separation / 4) * 0.34 : 0);
+      if (!choice || score > choice.score) choice = { node: candidate, score };
+    }
+    if (!choice) break;
+    selected.push(choice.node);
+  }
+  const edgeIndices = /* @__PURE__ */ new Set();
+  const nodeIds = new Set(selected.map((node) => node.id));
+  const nodeActivities = /* @__PURE__ */ new Map();
+  const addNodeActivity = (nodeId, activity) => {
+    const activities = nodeActivities.get(nodeId) || [];
+    activities.push(activity);
+    nodeActivities.set(nodeId, activities);
+  };
+  for (const node of selected) {
+    addNodeActivity(node.id, {
+      start: randomInteger(0, AMBIENT_NODE_START_MAX_DELAY),
+      duration: randomInteger(AMBIENT_NODE_MIN_DURATION, AMBIENT_NODE_MAX_DURATION)
+    });
+  }
+  const edgeActivities = /* @__PURE__ */ new Map();
+  for (const node of selected) {
+    const nodeActivity = nodeActivities.get(node.id)?.[0];
+    const connected = shuffle(adjacency.get(node.id) || []);
+    const edgeCount = Math.min(connected.length, randomInteger(1, Math.min(3, Math.max(1, connected.length))));
+    for (const connection of connected.slice(0, edgeCount)) {
+      if (edgeIndices.has(connection.index)) continue;
+      edgeIndices.add(connection.index);
+      const duration = edgeSignalDuration(node, nodeById.get(connection.neighborId));
+      const start = nodeActivity.start + randomInteger(90, 360);
+      const direction = connection.edge.source === node.id ? 1 : -1;
+      edgeActivities.set(connection.index, {
+        start,
+        duration,
+        direction,
+        tailLength: randomInteger(82, 132) / 1e3
+      });
+      nodeIds.add(connection.neighborId);
+      addNodeActivity(connection.neighborId, {
+        start: start + Math.round(duration * randomInteger(72, 88) / 100),
+        duration: randomInteger(AMBIENT_NODE_MIN_DURATION, AMBIENT_NODE_MAX_DURATION)
+      });
+    }
+  }
+  const latestPulseEnd = Math.max(
+    0,
+    ...[...nodeActivities.values()].flat().map((activity) => activity.start + activity.duration),
+    ...[...edgeActivities.values()].map((activity) => activity.start + activity.duration)
+  );
+  return {
+    nodeIds,
+    edgeIndices,
+    nodeActivities,
+    edgeActivities,
+    duration: latestPulseEnd + randomInteger(AMBIENT_GROUP_IDLE_MIN_DURATION, AMBIENT_GROUP_IDLE_MAX_DURATION),
+    index: groupIndex
+  };
+}
+function createFocusedGroup(selectedId, adjacency, nodeById, groupIndex) {
+  const connected = shuffle(adjacency.get(selectedId) || []);
+  const nodeIds = /* @__PURE__ */ new Set([selectedId]);
+  const nodeActivities = /* @__PURE__ */ new Map();
+  const addNodeActivity = (nodeId, activity) => {
+    const activities = nodeActivities.get(nodeId) || [];
+    activities.push(activity);
+    nodeActivities.set(nodeId, activities);
+  };
+  const sourceActivity = {
+    start: randomInteger(80, FOCUSED_NODE_START_MAX_DELAY),
+    duration: randomInteger(AMBIENT_NODE_MIN_DURATION, AMBIENT_NODE_MAX_DURATION)
+  };
+  addNodeActivity(selectedId, sourceActivity);
+  const edgeActivities = /* @__PURE__ */ new Map();
+  const edgeCount = Math.min(connected.length, randomInteger(1, Math.min(3, Math.max(1, connected.length))));
+  for (const connection of connected.slice(0, edgeCount)) {
+    const duration = edgeSignalDuration(nodeById.get(selectedId), nodeById.get(connection.neighborId));
+    const start = sourceActivity.start + randomInteger(90, 260);
+    edgeActivities.set(connection.index, {
+      start,
+      duration,
+      direction: connection.edge.source === selectedId ? 1 : -1,
+      tailLength: randomInteger(74, 118) / 1e3
+    });
+    nodeIds.add(connection.neighborId);
+    addNodeActivity(connection.neighborId, {
+      start: start + Math.round(duration * randomInteger(74, 90) / 100),
+      duration: randomInteger(AMBIENT_NODE_MIN_DURATION, AMBIENT_NODE_MAX_DURATION)
+    });
+  }
+  const latestPulseEnd = Math.max(
+    0,
+    ...[...nodeActivities.values()].flat().map((activity) => activity.start + activity.duration),
+    ...[...edgeActivities.values()].map((activity) => activity.start + activity.duration)
+  );
+  return {
+    nodeIds,
+    edgeIndices: new Set(edgeActivities.keys()),
+    nodeActivities,
+    edgeActivities,
+    duration: latestPulseEnd + randomInteger(FOCUSED_GROUP_IDLE_MIN_DURATION, FOCUSED_GROUP_IDLE_MAX_DURATION),
+    index: groupIndex
+  };
+}
+function createMemoryBrainView(canvas, graph, {
+  onSelect = () => {
+  },
+  onSelectEvidence = () => {
+  },
+  onReset = () => {
+  }
+} = {}) {
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    throw new Error("记忆大脑需要 canvas 元素。");
+  }
+  const context = canvas.getContext("2d", { alpha: true });
+  if (!context) throw new Error("Canvas 2D is unavailable.");
+  const wireframe = buildBrainWireframe();
+  const nodes = (Array.isArray(graph?.nodes) ? graph.nodes : []).filter((node) => node.position && [node.position.x, node.position.y, node.position.z].every(Number.isFinite));
+  const ids = new Set(nodes.map((node) => node.id));
+  const edges = (Array.isArray(graph?.edges) ? graph.edges : []).filter((edge) => ids.has(edge.source) && ids.has(edge.target));
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const adjacency = new Map(nodes.map((node) => [node.id, []]));
+  for (const [index, edge] of edges.entries()) {
+    adjacency.get(edge.source)?.push({ edge, index, neighborId: edge.target });
+    adjacency.get(edge.target)?.push({ edge, index, neighborId: edge.source });
+  }
+  let width = 1;
+  let height = 1;
+  let pixelRatio = 1;
+  const restingRotationX = -0.08;
+  const restingRotationY = 0.42;
+  let rotationX = -0.17;
+  let rotationY = 0.72;
+  let targetRotationX = restingRotationX;
+  let targetRotationY = restingRotationY;
+  let zoom = 0.87;
+  let targetZoom = 1;
+  let selectedId = "";
+  let matchingIds = /* @__PURE__ */ new Set();
+  let selectedEvidenceId = "";
+  let directIds = /* @__PURE__ */ new Set();
+  let evidenceStars = [];
+  let hitTargets = [];
+  let pointerDown = null;
+  let destroyed = false;
+  let frame = 0;
+  let animate = true;
+  let visible = true;
+  let lastDrawAt = 0;
+  let frozenTime = performance.now();
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let lastInteractionAt = performance.now();
+  let ambientGroup = createAmbientGroup(nodes, adjacency, nodeById, 0);
+  let ambientGroupAge = 0;
+  let focusedGroup = null;
+  let focusedGroupAge = 0;
+  let lastAmbientFrameAt = performance.now();
+  let awakeningStartedAt = null;
+  function resize() {
+    const bounds = canvas.getBoundingClientRect();
+    pixelRatio = Math.min(1.6, window.devicePixelRatio || 1);
+    width = Math.max(1, bounds.width);
+    height = Math.max(1, bounds.height);
+    canvas.width = Math.round(width * pixelRatio);
+    canvas.height = Math.round(height * pixelRatio);
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    requestRender();
+  }
+  function awakeningAge(time) {
+    if (awakeningStartedAt === null) awakeningStartedAt = time;
+    return Math.max(0, time - awakeningStartedAt);
+  }
+  const observer = new ResizeObserver(resize);
+  observer.observe(canvas);
+  resize();
+  function project(point) {
+    const rotated = rotatePoint(point, rotationX, rotationY);
+    const cameraDistance = 3.95 / zoom;
+    const depth = cameraDistance - rotated.z;
+    const focal = Math.min(width, height) * 1.38;
+    return {
+      x: width * 0.5 + rotated.x * focal / depth,
+      y: height * 0.49 - rotated.y * focal / depth,
+      z: rotated.z,
+      scale: focal / depth,
+      visible: depth > 0.1
+    };
+  }
+  function drawBrain(palette) {
+    context.save();
+    for (const polyline of wireframe) {
+      const keyContour = polyline.strength >= 0.58;
+      context.lineWidth = keyContour ? 1.08 : 0.72;
+      context.shadowColor = keyContour ? `rgba(${palette.brainWireShadow}, ${0.28 * palette.glowAlpha})` : "transparent";
+      context.shadowBlur = keyContour ? 3.5 : 0;
+      for (let index = 1; index < polyline.points.length; index += 1) {
+        const left = project(polyline.points[index - 1]);
+        const right = project(polyline.points[index]);
+        if (!left.visible || !right.visible) continue;
+        const depth = clamp(((left.z + right.z) * 0.5 + 1.2) / 2.4, 0, 1);
+        const alpha = (0.054 + depth * 0.17) * polyline.strength * palette.wireAlpha;
+        context.strokeStyle = `rgba(${palette.brainWire}, ${alpha})`;
+        context.beginPath();
+        context.moveTo(left.x, left.y);
+        context.lineTo(right.x, right.y);
+        context.stroke();
+      }
+    }
+    context.restore();
+  }
+  function updateAmbientState(time) {
+    const elapsed = Math.min(80, Math.max(0, time - lastAmbientFrameAt));
+    lastAmbientFrameAt = time;
+    if (selectedId) {
+      if (!focusedGroup) focusedGroup = createFocusedGroup(selectedId, adjacency, nodeById, 0);
+      focusedGroupAge += elapsed;
+      if (focusedGroupAge >= focusedGroup.duration) {
+        focusedGroupAge = 0;
+        focusedGroup = createFocusedGroup(selectedId, adjacency, nodeById, focusedGroup.index + 1);
+      }
+      return;
+    }
+    ambientGroupAge += elapsed;
+    if (ambientGroupAge >= ambientGroup.duration) {
+      ambientGroupAge = 0;
+      ambientGroup = createAmbientGroup(nodes, adjacency, nodeById, ambientGroup.index + 1);
+    }
+  }
+  function ambientActivityFor(nodeOrEdgeId, kind) {
+    const group = selectedId ? focusedGroup : ambientGroup;
+    if (!group) return { progress: 0, strength: 0, direction: 1, tailLength: 0 };
+    const collection = kind === "edge" ? group.edgeIndices : group.nodeIds;
+    const activities = kind === "edge" ? group.edgeActivities : group.nodeActivities;
+    const activity = activities.get(nodeOrEdgeId);
+    const pulse = collection.has(nodeOrEdgeId) ? ambientPulse(selectedId ? focusedGroupAge : ambientGroupAge, activity) : { progress: 0, strength: 0 };
+    return {
+      ...pulse,
+      direction: kind === "edge" ? activity?.direction || 1 : 1,
+      tailLength: kind === "edge" ? activity?.tailLength || 0.1 : 0
+    };
+  }
+  function quadraticPoint(start, control, end, progress) {
+    const inverse = 1 - progress;
+    return {
+      x: inverse * inverse * start.x + 2 * inverse * progress * control.x + progress * progress * end.x,
+      y: inverse * inverse * start.y + 2 * inverse * progress * control.y + progress * progress * end.y
+    };
+  }
+  function strokeConnectionPath(projected, progress = 1) {
+    const reveal = clamp(progress, 0, 1);
+    if (reveal >= 0.999) {
+      context.beginPath();
+      context.moveTo(projected.start.x, projected.start.y);
+      context.quadraticCurveTo(
+        projected.control.x,
+        projected.control.y,
+        projected.end.x,
+        projected.end.y
+      );
+      return;
+    }
+    const segmentCount = Math.max(2, Math.ceil(18 * reveal));
+    const start = quadraticPoint(projected.start, projected.control, projected.end, 0);
+    context.beginPath();
+    context.moveTo(start.x, start.y);
+    for (let index = 1; index <= segmentCount; index += 1) {
+      const point = quadraticPoint(projected.start, projected.control, projected.end, reveal * (index / segmentCount));
+      context.lineTo(point.x, point.y);
+    }
+  }
+  function drawSignalTail(projected, activity, palette) {
+    if (activity.strength <= 0) return;
+    const headProgress = activity.direction < 0 ? 1 - activity.progress : activity.progress;
+    const tailLength = activity.tailLength || 0.1;
+    const tailProgress = activity.direction < 0 ? Math.min(1, headProgress + tailLength) : Math.max(0, headProgress - tailLength);
+    const segmentCount = 18;
+    const strokePulse = (widthMultiplier, alphaMultiplier, shadowBlur = 0) => {
+      context.shadowColor = shadowBlur ? `rgba(${palette.pulseShadow}, ${0.8 * palette.glowAlpha})` : "transparent";
+      context.shadowBlur = shadowBlur * palette.glowBlur;
+      for (let segment = 1; segment <= segmentCount; segment += 1) {
+        const from = (segment - 1) / segmentCount;
+        const to = segment / segmentCount;
+        const center = (from + to) * 0.5;
+        const envelope = Math.pow(Math.sin(center * Math.PI), 0.72) * (0.5 + center * 0.5);
+        const startProgress = tailProgress + (headProgress - tailProgress) * from;
+        const endProgress = tailProgress + (headProgress - tailProgress) * to;
+        const start = quadraticPoint(projected.start, projected.control, projected.end, startProgress);
+        const end = quadraticPoint(projected.start, projected.control, projected.end, endProgress);
+        context.lineWidth = 0.42 + activity.strength * envelope * widthMultiplier;
+        context.strokeStyle = `rgba(${palette.pulse}, ${activity.strength * envelope * alphaMultiplier})`;
+        context.beginPath();
+        context.moveTo(start.x, start.y);
+        context.lineTo(end.x, end.y);
+        context.stroke();
+      }
+    };
+    context.save();
+    context.lineCap = "butt";
+    strokePulse(1.22, 0.17, 4 + activity.strength * 3);
+    strokePulse(0.62, 0.62);
+    context.restore();
+  }
+  function edgeProjection(edge) {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (!source?.position || !target?.position) return null;
+    const start = project(source.position);
+    const end = project(target.position);
+    if (!start.visible || !end.visible) return null;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+    const bend = Math.min(34, length * 0.14) * (edge.id.charCodeAt(0) % 2 ? 1 : -1);
+    return {
+      start,
+      end,
+      control: {
+        x: (start.x + end.x) * 0.5 - dy / length * bend,
+        y: (start.y + end.y) * 0.5 + dx / length * bend
+      }
+    };
+  }
+  function drawConnections(awakeningAge2, palette) {
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    const visibleEdgeIndices = selectedId ? new Set((adjacency.get(selectedId) || []).map((connection) => connection.index)) : /* @__PURE__ */ new Set([
+      ...edges.map((edge, index) => edge?.structural ? index : -1).filter((index) => index >= 0),
+      ...ambientGroup.edgeIndices
+    ]);
+    for (const edgeIndex of visibleEdgeIndices) {
+      const edge = edges[edgeIndex];
+      if (!edge) continue;
+      const ambientActivity = ambientActivityFor(edgeIndex, "edge");
+      const ambientStrength = ambientActivity.strength;
+      const mode = memoryBrainEdgeMode(edge, { selectedId, ambientStrength });
+      if (mode === "hidden") continue;
+      const direct = mode === "direct";
+      const ambient = mode === "ambient";
+      const structural = mode === "structural";
+      const projected = edgeProjection(edge);
+      if (!projected) continue;
+      const reveal = edgeAwakeningProgress(
+        edge,
+        nodeById.get(edge.source),
+        nodeById.get(edge.target),
+        awakeningAge2
+      );
+      if (reveal <= 0) continue;
+      const stableRelation = direct || structural;
+      const alpha = (stableRelation ? 0.17 : 0.075 + ambientStrength * 0.2) * reveal * palette.relationAlpha;
+      context.lineWidth = stableRelation ? 0.8 : 0.62 + ambientStrength * 0.22;
+      context.strokeStyle = relationColor(edge, alpha, palette);
+      if (ambient) {
+        context.shadowColor = relationColor(edge, 0.55 * palette.glowAlpha, palette);
+        context.shadowBlur = (6 + ambientStrength * 5) * palette.glowBlur;
+      }
+      strokeConnectionPath(projected, reveal);
+      context.stroke();
+      context.shadowBlur = 0;
+      if (reveal >= 0.985 && ambientStrength > 0 && (ambient || direct)) drawSignalTail(projected, ambientActivity, palette);
+    }
+    context.restore();
+  }
+  function drawNodes(time, awakeningAge2, palette) {
+    const projectedNodes = nodes.map((node) => ({
+      node,
+      projected: project(node.position)
+    })).filter((value) => value.projected.visible).sort((left, right) => left.projected.z - right.projected.z);
+    hitTargets = [];
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    for (const value of projectedNodes) {
+      const { node, projected } = value;
+      const reveal = nodeAwakeningProgress(node, awakeningAge2);
+      if (reveal <= 0) continue;
+      const selected = node.id === selectedId;
+      const direct = directIds.has(node.id) || matchingIds.has(node.id);
+      const depth = clamp((projected.z + 1.2) / 2.4, 0, 1);
+      const ambientStrength = ambientActivityFor(node.id, "node").strength;
+      const ambient = ambientStrength > 0;
+      const baseSize = nodeBaseRadius(node);
+      const breathing = ambient ? 0.98 + ambientStrength * 0.12 : 1;
+      const radius = (selected ? baseSize * 1.72 : direct ? baseSize * 1.3 : baseSize) * breathing * clamp(projected.scale / 150, 0.76, 1.34) * (0.42 + reveal * 0.58);
+      let alpha = (node.visualTier === "minor" ? 0.56 : node.visualTier === "major" ? 0.58 : 0.48) + depth * 0.3;
+      let color = nodePalette(node, palette);
+      if (selected) {
+        alpha = 1;
+        color = palette.selected;
+      } else if (direct) {
+        alpha = ambient ? Math.min(1, 0.96 + ambientStrength * 0.04) : 0.96;
+      } else if (selectedId) {
+        alpha *= ambient ? 0.56 + ambientStrength * 0.28 : 0.2;
+      } else if (ambient) {
+        alpha = Math.min(1, alpha + 0.1 + ambientStrength * 0.24);
+      }
+      if (node.visualTier === "major" && !selected) {
+        alpha = Math.max(alpha, 0.96);
+      }
+      alpha *= reveal;
+      if (ambient) {
+        context.fillStyle = `rgba(${color}, ${(0.025 + ambientStrength * 0.045) * reveal * palette.nodeAmbientAlpha})`;
+        context.shadowColor = `rgba(${color}, ${0.7 * reveal * palette.glowAlpha})`;
+        context.shadowBlur = (13 + ambientStrength * 9) * (0.35 + reveal * 0.65) * palette.glowBlur;
+        context.beginPath();
+        context.arc(projected.x, projected.y, Math.max(2.8 * reveal, radius + 2.7 * reveal), 0, TAU);
+        context.fill();
+      }
+      if (node.visualTier === "major") {
+        context.strokeStyle = `rgba(${color}, ${(selectedId && !selected && !direct ? 0.07 : 0.29 + depth * 0.17) * reveal})`;
+        context.lineWidth = 0.8;
+        context.beginPath();
+        context.arc(projected.x, projected.y, radius + 2.55 * reveal, 0, TAU);
+        context.stroke();
+        context.strokeStyle = `rgba(${color}, ${(selectedId && !selected && !direct ? 0.035 : 0.15 + depth * 0.1) * reveal})`;
+        context.beginPath();
+        context.arc(projected.x, projected.y, radius + 4.6 * reveal, 0, TAU);
+        context.stroke();
+      } else if (node.visualTier === "state") {
+        context.strokeStyle = `rgba(${color}, ${(selectedId && !selected && !direct ? 0.05 : 0.22) * reveal})`;
+        context.lineWidth = 0.65;
+        context.beginPath();
+        context.arc(projected.x, projected.y, radius + 2.2 * reveal, 0, TAU);
+        context.stroke();
+      }
+      context.fillStyle = `rgba(${color}, ${alpha})`;
+      context.shadowColor = `rgba(${color}, ${(selected || direct ? 0.95 : node.visualTier === "minor" ? 0.58 : node.visualTier === "major" ? 0.54 : 0.4) * reveal * palette.glowAlpha})`;
+      context.shadowBlur = (selected ? 25 : direct ? 16 : ambient ? 13 : node.visualTier === "minor" ? 5 : node.visualTier === "major" ? 9 : 7) * (0.35 + reveal * 0.65) * palette.glowBlur;
+      context.beginPath();
+      context.arc(projected.x, projected.y, Math.max(node.visualTier === "minor" ? 0.58 : 1, radius), 0, TAU);
+      context.fill();
+      if (selected) {
+        context.strokeStyle = `rgba(${palette.selectedRing}, ${0.82 * reveal})`;
+        context.lineWidth = 1;
+        context.beginPath();
+        context.arc(projected.x, projected.y, radius + 8 * reveal + Math.sin(time * 3e-3) * 2, 0, TAU);
+        context.stroke();
+      }
+      if (reveal >= 0.72) {
+        hitTargets.push({
+          kind: "node",
+          id: node.id,
+          x: projected.x,
+          y: projected.y,
+          radius: Math.max(node.visualTier === "major" ? 14 : node.visualTier === "state" ? 10 : 7, radius + 5),
+          z: projected.z
+        });
+      }
+    }
+    context.restore();
+  }
+  function drawEvidenceStars(time, palette) {
+    if (!selectedId || !evidenceStars.length) return;
+    context.save();
+    context.globalCompositeOperation = palette.evidenceComposite;
+    for (const evidence of evidenceStars) {
+      const projected = project(evidence.position);
+      if (!projected.visible) continue;
+      const selected = evidence.id === selectedEvidenceId;
+      const twinkle = evidenceTwinkle(evidence.id, time);
+      const radius = Math.max(1.15, evidence.radius * clamp(projected.scale / 150, 0.76, 1.34));
+      const glowRadius = selected ? radius + 7.5 : radius + 3.5;
+      context.fillStyle = `rgba(${palette.evidenceAura}, ${selected ? 0.25 : 0.035 + twinkle * 0.055})`;
+      context.shadowColor = selected ? `rgba(${palette.evidenceGlowSelected}, ${0.98 * palette.glowAlpha})` : `rgba(${palette.evidenceGlow}, ${0.82 * palette.glowAlpha})`;
+      context.shadowBlur = (selected ? 17 : 4 + twinkle * 4) * palette.glowBlur;
+      context.beginPath();
+      context.arc(projected.x, projected.y, glowRadius, 0, TAU);
+      context.fill();
+      context.shadowBlur = 0;
+      context.fillStyle = selected ? `rgba(${palette.evidenceCoreSelected}, 1)` : `rgba(${palette.evidenceCore}, ${0.38 + twinkle * 0.58})`;
+      context.beginPath();
+      context.moveTo(projected.x, projected.y - radius * 2.7);
+      context.lineTo(projected.x + radius * 0.78, projected.y - radius * 0.78);
+      context.lineTo(projected.x + radius * 2.7, projected.y);
+      context.lineTo(projected.x + radius * 0.78, projected.y + radius * 0.78);
+      context.lineTo(projected.x, projected.y + radius * 2.7);
+      context.lineTo(projected.x - radius * 0.78, projected.y + radius * 0.78);
+      context.lineTo(projected.x - radius * 2.7, projected.y);
+      context.lineTo(projected.x - radius * 0.78, projected.y - radius * 0.78);
+      context.closePath();
+      context.fill();
+      hitTargets.push({
+        kind: "evidence",
+        id: evidence.id,
+        source: evidence.source,
+        x: projected.x,
+        y: projected.y,
+        radius: Math.max(7, radius + 4.8),
+        z: projected.z + 1e-3
+      });
+    }
+    context.restore();
+  }
+  function updateRelated() {
+    directIds = new Set((adjacency.get(selectedId) || []).map((value) => value.neighborId));
+  }
+  function focusNode(id, notify = true) {
+    const node = nodeById.get(id);
+    if (!node?.position) return false;
+    selectedId = id;
+    focusedGroup = null;
+    focusedGroupAge = 0;
+    selectedEvidenceId = "";
+    evidenceStars = [];
+    updateRelated();
+    const point = node.position;
+    const yaw = Math.atan2(point.x, point.z);
+    const zAfterYaw = Math.sqrt(point.x * point.x + point.z * point.z);
+    const pitch = Math.atan2(point.y, Math.max(0.01, zAfterYaw));
+    targetRotationY = nearestAngle(yaw, rotationY);
+    targetRotationX = nearestAngle(pitch, rotationX);
+    targetZoom = node.visualTier === "major" ? 1.42 : node.visualTier === "state" ? 1.55 : 1.72;
+    lastInteractionAt = performance.now();
+    if (notify) onSelect(node);
+    requestRender();
+    return true;
+  }
+  function reset() {
+    selectedId = "";
+    focusedGroup = null;
+    focusedGroupAge = 0;
+    selectedEvidenceId = "";
+    directIds = /* @__PURE__ */ new Set();
+    evidenceStars = [];
+    targetRotationX = restingRotationX;
+    targetRotationY = nearestAngle(restingRotationY, rotationY);
+    targetZoom = 1;
+    lastInteractionAt = performance.now();
+    onReset();
+    requestRender();
+  }
+  function hitTest(x, y) {
+    return [...hitTargets].sort((left, right) => right.z - left.z).find((target) => Math.hypot(target.x - x, target.y - y) <= target.radius);
+  }
+  function pointerPosition(event) {
+    const bounds = canvas.getBoundingClientRect();
+    return {
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top
+    };
+  }
+  function onPointerDown(event) {
+    const point = pointerPosition(event);
+    pointerDown = {
+      pointerId: event.pointerId,
+      x: point.x,
+      y: point.y,
+      rotationX,
+      rotationY,
+      moved: false
+    };
+    canvas.setPointerCapture(event.pointerId);
+    lastInteractionAt = performance.now();
+  }
+  function onPointerMove(event) {
+    const point = pointerPosition(event);
+    if (pointerDown?.pointerId === event.pointerId) {
+      const dx = point.x - pointerDown.x;
+      const dy = point.y - pointerDown.y;
+      pointerDown.moved ||= Math.abs(dx) + Math.abs(dy) > 4;
+      rotationY = pointerDown.rotationY - dx * 6e-3;
+      rotationX = clamp(pointerDown.rotationX + dy * 5e-3, -Math.PI * 0.48, Math.PI * 0.48);
+      targetRotationX = rotationX;
+      targetRotationY = rotationY;
+      canvas.style.cursor = "grabbing";
+      requestRender();
+      return;
+    }
+    const target = hitTest(point.x, point.y);
+    canvas.style.cursor = target ? "pointer" : "grab";
+    canvas.title = target?.kind === "node" ? nodeById.get(target.id)?.title || "" : target?.source?.speaker || "";
+  }
+  function onPointerUp(event) {
+    const activePointer = pointerDown;
+    if (!activePointer || activePointer.pointerId !== event.pointerId) return;
+    const point = pointerPosition(event);
+    if (!activePointer.moved) {
+      const target = hitTest(point.x, point.y);
+      if (target?.kind === "evidence") {
+        selectedEvidenceId = target.id;
+        onSelectEvidence(target.source);
+        requestRender();
+      } else if (target) {
+        focusNode(target.id);
+      }
+    }
+    finishPointerInteraction(activePointer.pointerId);
+  }
+  function finishPointerInteraction(pointerId = pointerDown?.pointerId) {
+    const activePointer = pointerDown;
+    if (!activePointer || activePointer.pointerId !== pointerId) return;
+    pointerDown = null;
+    releasePointerCapture(canvas, activePointer.pointerId);
+    canvas.style.cursor = "grab";
+  }
+  function onPointerCaptureEnd(event) {
+    finishPointerInteraction(event?.pointerId);
+  }
+  function onWheel(event) {
+    event.preventDefault();
+    targetZoom = clamp(targetZoom * Math.exp(-event.deltaY * 1e-3), 0.72, 2.25);
+    lastInteractionAt = performance.now();
+    requestRender();
+  }
+  const unsubscribePointerCaptureRecovery = subscribePointerCaptureRecovery(() => finishPointerInteraction());
+  canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", onPointerCaptureEnd);
+  canvas.addEventListener("lostpointercapture", onPointerCaptureEnd);
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("dblclick", reset);
+  function requestRender() {
+    if (!destroyed && !frame && visible && !document.hidden) frame = requestAnimationFrame(render);
+  }
+  function render(time) {
+    frame = 0;
+    if (destroyed || !canvas.isConnected) {
+      destroy();
+      return;
+    }
+    if (!visible || document.hidden) return;
+    const moving = animate && !reducedMotion.matches;
+    if (moving && time - lastDrawAt < 1e3 / 30) {
+      requestRender();
+      return;
+    }
+    lastDrawAt = time;
+    const age = moving ? awakeningAge(time) : BRAIN_AWAKENING_DURATION;
+    if (moving) {
+      frozenTime = time;
+      updateAmbientState(time);
+      if (age >= BRAIN_AWAKENING_DURATION && !selectedId && !pointerDown && time - lastInteractionAt > BRAIN_AWAKENING_DURATION) targetRotationY += 48e-5;
+      rotationX += (targetRotationX - rotationX) * 0.085;
+      rotationY += (targetRotationY - rotationY) * 0.085;
+      zoom += (targetZoom - zoom) * 0.085;
+    } else {
+      rotationX = targetRotationX;
+      rotationY = targetRotationY;
+      zoom = targetZoom;
+    }
+    context.clearRect(0, 0, width, height);
+    const palette = memoryBrainPalette(currentMemoryBrainTheme());
+    drawBrain(palette);
+    drawConnections(age, palette);
+    drawNodes(moving ? time : frozenTime, age, palette);
+    drawEvidenceStars(moving ? time : frozenTime, palette);
+    if (moving) requestRender();
+  }
+  function updateVisibility() {
+    lastAmbientFrameAt = performance.now();
+    lastDrawAt = 0;
+    if (!visible || document.hidden) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+    } else requestRender();
+  }
+  const intersection = new IntersectionObserver((entries) => {
+    visible = entries[0].isIntersecting;
+    updateVisibility();
+  });
+  intersection.observe(canvas);
+  document.addEventListener("visibilitychange", updateVisibility);
+  reducedMotion.addEventListener("change", updateVisibility);
+  requestRender();
+  function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+    cancelAnimationFrame(frame);
+    observer.disconnect();
+    intersection.disconnect();
+    document.removeEventListener("visibilitychange", updateVisibility);
+    reducedMotion.removeEventListener("change", updateVisibility);
+    unsubscribePointerCaptureRecovery();
+    finishPointerInteraction();
+    canvas.removeEventListener("pointerdown", onPointerDown);
+    canvas.removeEventListener("pointermove", onPointerMove);
+    canvas.removeEventListener("pointerup", onPointerUp);
+    canvas.removeEventListener("pointercancel", onPointerCaptureEnd);
+    canvas.removeEventListener("lostpointercapture", onPointerCaptureEnd);
+    canvas.removeEventListener("wheel", onWheel);
+    canvas.removeEventListener("dblclick", reset);
+  }
+  return {
+    destroy,
+    focusNode,
+    setEvidenceSources(memoryId, sources) {
+      const node = nodeById.get(memoryId);
+      if (!node?.position || selectedId !== memoryId) return false;
+      selectedEvidenceId = "";
+      evidenceStars = createEvidenceStars(node.position, sources);
+      requestRender();
+      return evidenceStars.length > 0;
+    },
+    reset,
+    selectedId: () => selectedId,
+    setQuery(query) {
+      matchingIds = new Set(searchMemoryBrainNodes(nodes, query).map((node) => node.id));
+      requestRender();
+    },
+    setAnimationEnabled(value) {
+      if (animate === value) return;
+      animate = value;
+      lastAmbientFrameAt = performance.now();
+      cancelAnimationFrame(frame);
+      frame = 0;
+      requestRender();
+    },
+    zoomBy(factor) {
+      targetZoom = clamp(targetZoom * factor, 0.72, 2.25);
+      lastInteractionAt = performance.now();
+      requestRender();
+    }
+  };
+}
+function mountBrainCanvas(canvas, graph, onSelect, onSelectEvidence = () => {
+}) {
+  const view = createMemoryBrainView(canvas, graph, { onSelect, onSelectEvidence, onReset: () => onSelect(null) });
+  return {
+    update(value) {
+      if ("selected" in value && value.selected !== view.selectedId()) {
+        if (value.selected) view.focusNode(value.selected, false);
+        else if (view.selectedId()) view.reset();
+      }
+      if ("animate" in value) view.setAnimationEnabled(value.animate);
+      if ("query" in value) view.setQuery(value.query);
+      if ("evidence" in value) view.setEvidenceSources(view.selectedId(), value.evidence);
+    },
+    control(action) {
+      if (action === "reset") view.reset();
+      else view.zoomBy(action === "in" ? 1.2 : 1 / 1.2);
+    },
+    destroy: view.destroy
+  };
+}
+export {
+  mountBrainCanvas
+};

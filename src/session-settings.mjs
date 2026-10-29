@@ -1,5 +1,5 @@
 import { Service } from '@deepseek-ai/cordis';
-import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION } from '@deepseek-ai/dsh-system-prompt';
+import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
@@ -12,18 +12,19 @@ export const CHAT_COMPACTION_PROMPT = `将上方对话整理为可供继续交�
 - 双方明确表达的态度、感受、偏好、称呼与关系变化；区分原话、事实与推测。
 - 已经达成的约定、用户的要求和纠正、尚未回答的问题及未完成的事项。
 - 继续当前交流所必需的细节；涉及工作时保留必要的路径、标识和准确数值。
-沿用对话中明确的人物和时间指代，不编造经历、情绪、关系或承诺，不把临时感受概括为固定性格。
-已有摘要是较早的背景：合并仍然有效的内容，更新变化，去掉过时信息，不逐次堆叠旧摘要。
-摘要用于承接对话，不重写人设，也不罗列与当前交流无关的全部旧记忆。
-只输出摘要，不继续聊天，不调用工具，不解释摘要过程。`;
+按对话中明确的人物、时间和来源叙述，临时感受保留其情境范围。
+已有摘要作为较早背景：合并有效内容，更新变化，去掉过时和重复信息。
+只输出承接当前对话所需的摘要。`;
 
-const EMPTY = Object.freeze({ version: 1, revision: 0, personaMode: 'dsh', persona: '',
+const EMPTY = Object.freeze({ version: 1, revision: 0, memoryEnabled: false, personaMode: 'dsh', persona: '',
   compactionMode: 'dsh', compactionPrompt: '' });
 const MAX_PROMPT_LENGTH = 32000;
+const NATIVE_VIEW = Symbol('native-prompt-view');
+const OFFICIAL_COMPACTION_REFERENCE = readFileSync(new URL('./prompts/dsh-compaction-rc3.txt', import.meta.url), 'utf8').trim();
 
 export function validatePromptSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).some(key => !['personaMode', 'persona', 'compactionMode', 'compactionPrompt'].includes(key))) {
+    || Object.keys(value).some(key => !['memoryEnabled', 'personaMode', 'persona', 'compactionMode', 'compactionPrompt'].includes(key))) {
     throw new Error('无效的会话提示词配置。');
   }
   if (!['dsh', 'custom'].includes(value.personaMode)
@@ -33,26 +34,31 @@ export function validatePromptSettings(value) {
   }
   if (value.personaMode === 'custom' && !value.persona.trim()) throw new Error('请填写本会话的人设。');
   if (value.compactionMode === 'custom' && !value.compactionPrompt.trim()) throw new Error('请填写压缩提示词。');
-  return Object.fromEntries(['personaMode', 'persona', 'compactionMode', 'compactionPrompt'].map(key => [key, value[key]]));
+  if (value.memoryEnabled !== undefined && typeof value.memoryEnabled !== 'boolean') throw new Error('无效的会话记忆开关。');
+  return { ...Object.fromEntries(['personaMode', 'persona', 'compactionMode', 'compactionPrompt'].map(key => [key, value[key]])),
+    ...(value.memoryEnabled === undefined ? {} : { memoryEnabled: value.memoryEnabled }) };
 }
 
-/** Owns only adapter prompt preferences; memory algorithms and the session log remain native. */
-export class SessionPrompts extends Service {
-  constructor(ctx, dataRoot) {
-    super(ctx, 'suzuMemoryPrompts');
+/** Owns per-conversation opt-in and prompt preferences. */
+export class SessionSettings extends Service {
+  constructor(ctx, dataRoot, profileEnabled = () => true) {
+    super(ctx, 'suzuMemorySettings');
     this.directory = path.join(dataRoot, 'session-settings');
     this.cache = new Map();
+    this.nativeCompaction = new Map();
+    this.profileEnabled = profileEnabled;
     this.lifetime = new AbortController();
     this.pending = new Set();
     ctx.effect(() => async () => {
       this.lifetime.abort(new Error('会话提示词服务已关闭。'));
       await Promise.allSettled([...this.pending]);
       this.cache.clear();
+      this.nativeCompaction.clear();
     });
-    ctx.on('agent/disposed', ({ agent }) => { this.cache.delete(agent.session.id); });
+    ctx.on('agent/disposed', ({ agent }) => { this.cache.delete(agent.session.id); this.nativeCompaction.delete(agent.session.id); });
     ctx.on('system-prompt/assemble', async (assembly, context, next) => {
       const result = await next();
-      if (!context.agent) return result;
+      if (!context.agent || context[NATIVE_VIEW] || !this.isEnabled(context.agent.session.id)) return result;
       const settings = this.read(context.agent.session.id);
       if (settings.personaMode !== 'custom') return result;
       // Replace the native persona slots after scoped providers have assembled.
@@ -62,6 +68,19 @@ export class SessionPrompts extends Service {
         : section.name === PERSONA_SUFFIX_SECTION ? { ...section, text: '' } : section);
       return result;
     });
+  }
+
+  isEnabled(sessionId) { return this.profileEnabled() && this.read(sessionId).memoryEnabled; }
+
+  async nativeView(agent, signal) {
+    const assembly = await agent.ctx.systemPrompt.assemble({ agent, scope: agent, signal, [NATIVE_VIEW]: true });
+    const personaSections = assembly.sections.filter(section => [PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION].includes(section.name));
+    return {
+      persona: renderPrompt({ ...assembly, sections: personaSections }),
+      systemPrompt: renderPrompt(assembly),
+      compaction: this.nativeCompaction.get(agent.session.id) || OFFICIAL_COMPACTION_REFERENCE,
+      compactionSource: this.nativeCompaction.has(agent.session.id) ? 'session' : '0.2.1-rc.3',
+    };
   }
 
   filename(sessionId) {
@@ -77,7 +96,7 @@ export class SessionPrompts extends Service {
     if (value.version !== 1 || value.sessionId !== sessionId
       || !Number.isSafeInteger(value.revision) || value.revision < 1) throw new Error('会话提示词配置已损坏。');
     const { version, revision, sessionId: storedId, ...preferences } = value;
-    return Object.freeze({ version, revision, ...validatePromptSettings(preferences) });
+    return Object.freeze({ version, revision, memoryEnabled: false, ...validatePromptSettings(preferences) });
   }
 
   read(sessionId) {
@@ -86,15 +105,26 @@ export class SessionPrompts extends Service {
   }
 
   save(sessionId, preferences, revision, signal) {
+    return this.write(sessionId, () => validatePromptSettings(preferences), revision, signal);
+  }
+
+  setMemoryEnabled(sessionId, enabled, revision, signal) {
+    return this.write(sessionId, () => {
+      if (typeof enabled !== 'boolean') throw new Error('无效的会话记忆开关。');
+      return { memoryEnabled: enabled };
+    }, revision, signal);
+  }
+
+  write(sessionId, change, revision, signal) {
     const combined = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
-    const task = this.persist(sessionId, preferences, revision, combined);
+    const task = this.persist(sessionId, change, revision, combined);
     this.pending.add(task);
     return task.finally(() => this.pending.delete(task));
   }
 
-  async persist(sessionId, preferences, revision, signal) {
+  async persist(sessionId, change, revision, signal) {
     signal.throwIfAborted();
-    const validated = validatePromptSettings(preferences);
+    const patch = change();
     if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('无效的配置版本。');
     await mkdir(this.directory, { recursive: true });
     return withFileLock(this.filename(sessionId), async () => {
@@ -104,9 +134,10 @@ export class SessionPrompts extends Service {
         this.cache.set(sessionId, current);
         return { saved: false, value: current };
       }
-      const next = Object.freeze({ version: 1, revision: revision + 1, ...validated });
+      const next = Object.freeze({ ...current, ...patch, version: 1, revision: revision + 1 });
       await writeFileAtomic(this.filename(sessionId), JSON.stringify({ ...next, sessionId }) + '\n', { mode: 0o600 });
       this.cache.set(sessionId, next);
+      this.ctx.emit('suzu-memory/session-settings-changed', sessionId);
       this.ctx.emit('system-prompt/change');
       return { saved: true, value: next };
     }, { signal, waitMs: 10000 });

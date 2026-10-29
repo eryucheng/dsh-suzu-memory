@@ -12,7 +12,7 @@ import { host, config, session, user, assistant, textChunks, eventCandidate } fr
 test('memory uses the configured timezone and follows the system when it is omitted', async t => {
   const { ctx } = await host(t);
   for (const timeZone of ['', 'America/Los_Angeles']) {
-    const runtime = new DshMemoryRuntime(ctx, config(t, { timeZone }));
+    const runtime = new DshMemoryRuntime(ctx, config(t, { timeZone }), () => true);
     try {
       const entry = runtime.require(session());
       assert.equal(entry.memory.defaults.retrieval.timeZone, timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -23,7 +23,7 @@ test('memory uses the configured timezone and follows the system when it is omit
 
 test('committed conversation text keeps host identities and excludes injected context and failed attempts', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t));
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
   t.after(() => runtime.close());
   const value = session();
   user(value, '今天去了灯塔博物馆。');
@@ -42,7 +42,7 @@ test('committed conversation text keeps host identities and excludes injected co
 test('resume consumes only the missing suffix and repeated notifications read no history', async t => {
   const { ctx } = await host(t);
   const options = config(t, { historyBatchSize: 2 });
-  let runtime = new DshMemoryRuntime(ctx, options);
+  let runtime = new DshMemoryRuntime(ctx, options, () => true);
   const value = session();
   user(value, '第一条'); assistant(value, '回复一');
   const ranges = [];
@@ -54,7 +54,7 @@ test('resume consumes only the missing suffix and repeated notifications read no
   runtime.consume(value);
   assert.deepEqual(ranges, []);
   await runtime.close();
-  runtime = new DshMemoryRuntime(ctx, options);
+  runtime = new DshMemoryRuntime(ctx, options, () => true);
   t.after(() => runtime.close());
   user(value, '第二条', 2);
   const { entry } = runtime.consume(value);
@@ -65,7 +65,7 @@ test('resume consumes only the missing suffix and repeated notifications read no
 test('a new message after a large history reads only its new log range', async t => {
   const { ctx } = await host(t);
   const options = config(t);
-  const runtime = new DshMemoryRuntime(ctx, options);
+  const runtime = new DshMemoryRuntime(ctx, options, () => true);
   t.after(() => runtime.close());
   const value = session();
   for (let turn = 1; turn <= 1000; turn++) user(value, `虚构历史 ${turn}`, turn);
@@ -85,7 +85,7 @@ test('a new message after a large history reads only its new log range', async t
 
 test('an interrupted acknowledgement can replay the same committed input without duplicates', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t));
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
   t.after(() => runtime.close());
   const value = session(); user(value, '记住这条经历。');
   const entry = runtime.require(value);
@@ -99,7 +99,7 @@ test('an interrupted acknowledgement can replay the same committed input without
 
 test('real Memory extraction and retrieval use the DSH model bridge', async t => {
   const { ctx, adapter } = await host(t, () => textChunks(JSON.stringify({ memories: [eventCandidate()] })));
-  const runtime = new DshMemoryRuntime(ctx, config(t));
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
   t.after(() => runtime.close());
   const value = session(); user(value, '今天去了灯塔博物馆。');
   const { entry } = runtime.consume(value);
@@ -114,7 +114,7 @@ test('real Memory extraction and retrieval use the DSH model bridge', async t =>
 
 test('concurrent maintenance requests reuse one execution and shutdown aborts it', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t));
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
   t.after(() => runtime.close());
   const value = session(); user(value, '一个待处理事件');
   const entry = runtime.require(value);
@@ -135,7 +135,7 @@ test('concurrent maintenance requests reuse one execution and shutdown aborts it
 
 test('the existing review console closes its listening socket with the session', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t));
+  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
   t.after(() => runtime.close());
   const value = session();
   user(value, '一条用于审核台维护的虚构消息。');
@@ -157,6 +157,90 @@ test('the existing review console closes its listening socket with the session',
   fs.writeFileSync(path.join(runtime.config.dataRoot, 'console-evidence.json'), JSON.stringify({ pid: process.pid, port: Number(url.port), state: 'closed-and-rebound' }));
 });
 
+test('the workbench switches live and cold libraries without restoring logs or starting model work', async t => {
+  const { ctx, adapter } = await host(t, () => textChunks(JSON.stringify({ memories: [eventCandidate()] })));
+  const settings = config(t);
+  const cold = session('saved-conversation');
+  user(cold, '今天去了灯塔博物馆。');
+  const writer = new DshMemoryRuntime(ctx, settings, () => true);
+  const { entry } = writer.consume(cold);
+  await entry.memory.processPendingEvents({ generator: entry.generator, runMaintenance: false, sourceScope: sourceScope(cold) });
+  const memoryId = entry.memory.brainSnapshot().nodes.find(node => node.title === '参观灯塔博物馆').id;
+  user(cold, '已入库尚未整理的虚构内容。'.repeat(5000), 2);
+  writer.consume(cold);
+  const captured = entry.memory.listInputEvents({ statuses: [] }).total;
+  const actors = memory => memory.withRepository(repository => ['user', 'agent'].map(role => {
+    const binding = repository.getActorEntityBinding({ agentId: memory.agentId, actorRole: role,
+      actorKey: role === 'user' ? 'user' : memory.agentId });
+    return { displayName: binding.display_name, aliases: repository.getEntity(memory.agentId, binding.entity_id).aliases };
+  }), { readOnly: true });
+  const originalActors = actors(entry.memory), originalTimeZone = entry.memory.defaults.retrieval.timeZone;
+  await writer.close();
+  user(cold, '关闭后新增的历史不能因浏览而入库。', 3);
+  const history = t.mock.method(cold, 'snapshotEvents', () => { throw new Error('Browsing read the log'); });
+  const live = ctx.sessions.create('current-conversation');
+  let rows = [
+    { sessionId: live.id, projections: { values: { title: '当前会话' } } },
+    { sessionId: cold.id, projections: { values: { title: '博物馆旧会话' } } },
+  ];
+  let listings = 0;
+  ctx.provide('sessionController', { list: async () => { listings++; return { items: rows }; } });
+  const runtime = new DshMemoryRuntime(ctx, { ...settings, enabled: false }, () => false);
+  t.after(() => runtime.close());
+  const calls = adapter.calls.length;
+  const url = new URL(await runtime.consoleUrl(runtime.view(live)));
+  const list = (await (await fetch(new URL('/memory/sessions', url))).json()).data;
+  assert.equal(list.currentId, live.id);
+  assert.deepEqual(list.items, rows.map(row => ({ id: row.sessionId, title: row.projections.values.title })));
+  assert.equal(runtime.savedViews.size, 0, 'listing must not open any saved databases');
+  const before = listings;
+  await Promise.all([runtime.conversations(), runtime.conversations()]);
+  assert.equal(listings - before, 1, 'concurrent directory reads share one request');
+  const selected = (await (await fetch(new URL('/memory/sessions/' + cold.id, url))).json()).data;
+  const other = new URL(selected.url);
+  const graph = (await (await fetch(new URL('/v1/brain', other))).json()).data;
+  assert.ok(graph.nodes.some(node => node.id === memoryId));
+  assert.equal((await fetch(new URL('/v1/memories/' + memoryId, url))).status, 404);
+  assert.equal((await fetch(new URL('/v1/memories/' + memoryId, other))).status, 200);
+  assert.equal((await fetch(new URL('/v1/review-console', other))).status, 200);
+  assert.equal(runtime.savedViews.get(cold.id).memory.listInputEvents({ statuses: [] }).total, captured);
+  assert.deepEqual(actors(runtime.savedViews.get(cold.id).memory), originalActors);
+  assert.equal(runtime.savedViews.get(cold.id).memory.defaults.retrieval.timeZone, originalTimeZone);
+  assert.equal(await runtime.openConversation(cold.id), other.href);
+  assert.equal(await runtime.openConversation(live.id), url.href);
+  assert.equal(runtime.sessions.size, 1);
+  assert.equal(runtime.savedViews.size, 1);
+  assert.equal(ctx.sessions.get(cold.id), undefined);
+  runtime.tick();
+  assert.equal(adapter.calls.length, calls);
+  assert.equal(history.mock.callCount(), 0);
+  const detach = ctx.sessions.enter(cold);
+  const automatic = new DshMemoryRuntime(ctx, { ...settings, automaticMaintenance: true }, () => true);
+  try {
+    const viewed = automatic.view(cold);
+    assert.ok(viewed.pendingCharacters >= settings.archiveBatchCharacters);
+    const schedule = t.mock.method(automatic, 'scheduleArchive', () => { throw new Error('Browsing scheduled processing'); });
+    automatic.tick();
+    assert.equal(schedule.mock.callCount(), 0);
+  } finally { await automatic.close(); }
+  const resumedView = runtime.view(cold);
+  assert.equal(await runtime.consoleUrl(resumedView), other.href, 'opening the conversation reuses its saved-library server');
+  await runtime.release(cold);
+  detach();
+  assert.equal((await fetch(new URL('/v1/memories/' + memoryId, other))).status, 200);
+  assert.equal(adapter.calls.length, calls);
+  assert.equal(history.mock.callCount(), 0);
+  rows = rows.slice(0, 1);
+  assert.equal((await fetch(new URL('/memory/sessions/' + cold.id, url))).status, 404);
+  assert.equal((await fetch(new URL('/memory/sessions/not-a-real-session', url))).status, 404);
+  await runtime.close();
+  for (const address of [url, other]) {
+    const socket = net.createServer();
+    await new Promise((resolve, reject) => { socket.once('error', reject); socket.listen(Number(address.port), '127.0.0.1', resolve); });
+    await new Promise((resolve, reject) => socket.close(error => error ? reject(error) : resolve()));
+  }
+});
+
 test('live embedding edits preserve each running provider snapshot and apply to the next operation', async t => {
   const { ctx } = await host(t);
   let current = { baseUrl: 'https://embedding.invalid/v1', model: 'fixture-a', dimensions: 2, apiKey: 'fixture-key' };
@@ -166,7 +250,7 @@ test('live embedding edits preserve each running provider snapshot and apply to 
     const request = JSON.parse(options.body); requests.push(request);
     return Response.json({ model: request.model, data: [{ index: 0, embedding: Array(request.dimensions).fill(1) }] });
   });
-  const runtime = new DshMemoryRuntime(ctx, settings);
+  const runtime = new DshMemoryRuntime(ctx, settings, () => true);
   t.after(() => runtime.close());
   const value = session();
   user(value, '用于配置更新检查的虚构消息。');
