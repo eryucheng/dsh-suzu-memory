@@ -9,52 +9,67 @@ const occurrenceKey = node => [node.world_id, node.world_frame, node.subject_rol
   node.valid_from, node.valid_to, node.evidence_mode, node.representation_layer, node.temporal_state,
   node.state_family, node.state_phase].join('\u001f');
 
-function evidenceCoverage(database, agentId, pool, eligibleMemoryIds, options) {
-  const budget = Math.max(1, Math.trunc(Number(options.maximumActivationWork) || 100));
+function createEvidenceCoverage(database, agentId, eligibleMemoryIds, options) {
   const depthLimit = Math.max(1, Math.trunc(Number(options.maximumChainDepth) || 3));
-  const ids = new Set(pool.map(candidate => candidate.node.id)), children = new Map();
-  let frontier = [...ids], edgeRows = 0, queries = 0;
-  for (let depth = 0; depth < depthLimit && frontier.length && edgeRows < budget; depth++) {
-    const placeholders = frontier.map(() => '?').join(',');
-    const rows = database.prepare(`
-      SELECT from_memory_id AS parent, to_memory_id AS child FROM memory_edges INDEXED BY memory_edges_from
-        WHERE agent_id = ? AND from_memory_id IN (${placeholders}) AND relation = 'supported_by'
+  const children = new Map(), direct = new Map(), resolved = new Map();
+  const stats = { queries: 0, edgeRows: 0, sourceRows: 0 };
+  let read;
+  function load(ids, withChildren) {
+    const sourceIds = ids.filter(id => !direct.has(id));
+    const edgeIds = withChildren ? ids.filter(id => !children.has(id)) : [];
+    if (!sourceIds.length && !edgeIds.length) return;
+    read ||= database.prepare(`
+      SELECT memory_id AS parent, source_id AS target, 0 AS is_edge FROM memory_sources
+        WHERE memory_id IN (SELECT value FROM json_each(?))
       UNION ALL
-      SELECT to_memory_id AS parent, from_memory_id AS child FROM memory_edges INDEXED BY memory_edges_to
-        WHERE agent_id = ? AND to_memory_id IN (${placeholders}) AND relation IN ('supports_topic', 'part_of_episode')
-      LIMIT ?
-    `).all(agentId, ...frontier, agentId, ...frontier, budget - edgeRows);
-    queries++;
-    edgeRows += rows.length;
-    const next = new Set();
-    for (const { parent, child } of rows) {
-      if (!eligibleMemoryIds.has(child)) continue;
-      if (!children.has(parent)) children.set(parent, new Set());
-      children.get(parent).add(child);
-      if (!ids.has(child)) { ids.add(child); next.add(child); }
+      SELECT from_memory_id, to_memory_id, 1 FROM memory_edges INDEXED BY memory_edges_from
+        WHERE agent_id = ? AND from_memory_id IN (SELECT value FROM json_each(?)) AND relation = 'supported_by'
+      UNION ALL
+      SELECT to_memory_id, from_memory_id, 1 FROM memory_edges INDEXED BY memory_edges_to
+        WHERE agent_id = ? AND to_memory_id IN (SELECT value FROM json_each(?)) AND relation IN ('supports_topic', 'part_of_episode')
+    `);
+    const edges = JSON.stringify(edgeIds);
+    const rows = read.all(JSON.stringify(sourceIds), agentId, edges, agentId, edges);
+    stats.queries++;
+    for (const id of sourceIds) direct.set(id, new Set());
+    for (const id of edgeIds) children.set(id, new Set());
+    for (const row of rows) {
+      if (!row.is_edge) {
+        stats.sourceRows++;
+        direct.get(row.parent).add(row.target);
+      } else {
+        stats.edgeRows++;
+        if (eligibleMemoryIds.has(row.target)) children.get(row.parent).add(row.target);
+      }
     }
-    frontier = [...next];
   }
-  const sourceRows = ids.size ? database.prepare(`SELECT memory_id, source_id FROM memory_sources
-    WHERE memory_id IN (${[...ids].map(() => '?').join(',')}) LIMIT ?`).all(...ids, budget * 4) : [];
-  if (ids.size) queries++;
-  const direct = new Map();
-  for (const row of sourceRows) {
-    if (!direct.has(row.memory_id)) direct.set(row.memory_id, new Set());
-    direct.get(row.memory_id).add(row.source_id);
-  }
-  const sources = new Map(pool.map(candidate => {
-    const seen = new Set(), pending = [candidate.node.id], result = new Set();
-    while (pending.length) {
-      const id = pending.pop();
-      if (seen.has(id)) continue;
-      seen.add(id);
-      for (const source of direct.get(id) || []) result.add(source);
-      pending.push(...(children.get(id) || []));
+  return { stats, direct, resolved,
+    sourcesFor(ids) {
+      const pending = [...new Set(ids)].filter(id => eligibleMemoryIds.has(id) && !resolved.has(id))
+        .map(id => ({ id, frontier: [id], seen: new Set([id]), sources: new Set() }));
+      // Resolve each root to the same depth, independent of other candidates
+      // or cache warm-up order. Shared rows are read only once per selection.
+      for (let depth = 0; depth <= depthLimit && pending.some(item => item.frontier.length); depth++) {
+        const frontier = [...new Set(pending.flatMap(item => item.frontier))];
+        load(frontier, depth < depthLimit);
+        for (const item of pending) {
+          const next = [];
+          for (const id of item.frontier) {
+            for (const source of direct.get(id)) item.sources.add(source);
+            if (depth === depthLimit) continue;
+            for (const child of children.get(id)) {
+              if (item.seen.has(child)) continue;
+              item.seen.add(child);
+              next.push(child);
+            }
+          }
+          item.frontier = next;
+        }
+      }
+      for (const item of pending) resolved.set(item.id, item.sources);
+      return ids.map(id => resolved.get(id) || new Set());
     }
-    return [candidate.node.id, result];
-  }));
-  return { sources, queries, edgeRows, sourceRows: sourceRows.length };
+  };
 }
 
 function overlap(left, right) {
@@ -78,14 +93,14 @@ function cosine(left, right) {
 /** Choose complete evidence units after discovery. Record limits apply here,
  * not to graph seeds; neighboring dialogue never bypasses this selection. */
 export function selectRankedContext({
-  database, agentId, candidates, eligibleMemoryIds, subjectConstraint,
-  preparedQuery, scoreLexical = createSeedLexicalScorer(preparedQuery), embeddingVectors = new Map(), maximum, options = {},
+  database, agentId, candidates, eligibleMemoryIds,
+  preparedQuery, scoreLexical = createSeedLexicalScorer(preparedQuery), embeddingVectors = new Map(), maximum, stateView = null, options = {},
 }) {
   const pool = fuseCandidateLanes(candidates, [], Number.MAX_SAFE_INTEGER);
   const byId = new Map(pool.map(candidate => [candidate.node.id, candidate]));
-  const coverage = evidenceCoverage(database, agentId, pool, eligibleMemoryIds, options);
-  const allowed = node => node && eligibleMemoryIds.has(node.id)
-    && !subjectConstraint.hardExcludedMemoryIds.has(node.id);
+  const excluded = new Set(Array.isArray(options.excludedMemoryIds) ? options.excludedMemoryIds : []);
+  const coverage = createEvidenceCoverage(database, agentId, eligibleMemoryIds, options);
+  const allowed = node => node && eligibleMemoryIds.has(node.id);
   const features = new Map();
   const describe = node => {
     if (!features.has(node.id)) {
@@ -94,7 +109,6 @@ export function selectRankedContext({
         identityKnown: Boolean((node.subject_role && node.subject_role !== 'unknown' && node.subject_key)
           || (node.kind === 'utterance' && node.metadata?.speaker)),
         world: [node.world_id, node.world_frame].join('\u001f'),
-        sources: coverage.sources.get(node.id) || new Set(),
         terms: new Set(lexicalTerms(text)), vector: embeddingVectors.get(node.id) });
     }
     return features.get(node.id);
@@ -114,7 +128,9 @@ export function selectRankedContext({
     const node = candidate.node;
     if (!allowed(node)) continue;
     if (node.kind !== 'utterance') {
-      units.push({ nodes: [node], relevance: candidate.score });
+      const current = stateView?.current(node, { includeClosed: true });
+      units.push({ nodes: current && current.id !== node.id && allowed(current)
+        ? maximum === 1 ? [current] : [current, node] : [node], relevance: candidate.score });
       continue;
     }
     const parts = scoreLexical.dialogue(node);
@@ -131,8 +147,9 @@ export function selectRankedContext({
       && row.world_id === node.world_id && row.world_frame === node.world_frame
       && (row.subject_role !== node.subject_role || row.subject_key !== node.subject_key));
     if (!reply) {
-      // A topic-matching question is a discovery anchor, not an answer.
-      // Explicit original-wording/evidence requests use their own disclosure.
+      // Original wording can itself be requested. Preserve speaker and
+      // punctuation so the reader can interpret the utterance.
+      units.push({ nodes: [node], relevance: candidate.score });
       continue;
     }
     const parsed = byId.get(reply.id)?.node || { ...reply, metadata: JSON.parse(reply.metadata_json || '{}') };
@@ -142,6 +159,7 @@ export function selectRankedContext({
       relevance: Math.max(candidate.score, byId.get(reply.id)?.score || 0) });
   }
   const selected = new Map(), decisions = [], remaining = new Set(units), similarities = new Map();
+  let prunedComparisons = 0;
   const similarity = (node, other) => {
     const key = [node.id, other.id].sort().join('\u001f');
     if (similarities.has(key)) return similarities.get(key);
@@ -150,19 +168,26 @@ export function selectRankedContext({
     if (left.identityKnown && left.key === right.key && left.text && left.text === right.text) return 1;
     // Related subject matter is not duplicate information. A shared source
     // is required before semantic similarity lowers a distinct fact's rank.
-    const sharedEvidence = overlap(left.sources, right.sources);
-    if (!sharedEvidence) return 0;
     const textOverlap = overlap(left.terms, right.terms);
-    const value = sharedEvidence * (left.vector && right.vector
-      ? (textOverlap + cosine(left.vector, right.vector)) / 2 : textOverlap);
+    const contentSimilarity = left.vector && right.vector
+      ? (textOverlap + cosine(left.vector, right.vector)) / 2 : textOverlap;
+    const sharedEvidence = contentSimilarity > 0
+      ? overlap(...coverage.sourcesFor([node.id, other.id])) : 0;
+    const value = sharedEvidence * contentSimilarity;
     similarities.set(key, value);
     return value;
   };
   while (remaining.size && selected.size < maximum) {
     let best = null;
     for (const unit of remaining) {
-      const fresh = unit.nodes.filter(node => !selected.has(node.id));
+      const fresh = unit.nodes.filter(node => !selected.has(node.id) && !excluded.has(node.id));
       if (!fresh.length || selected.size + fresh.length > maximum) continue;
+      // Redundancy only lowers nonnegative relevance. Keep equal upper
+      // bounds in the comparison so the existing tie order stays intact.
+      if (best && unit.relevance >= 0 && unit.relevance < best.utility) {
+        prunedComparisons++;
+        continue;
+      }
       // Identical wording for the same holder/world adds no new information.
       // Other overlap only lowers priority; different facts are never deleted.
       const duplicate = fresh.every(node => [...selected.values()].some(other => {
@@ -183,7 +208,8 @@ export function selectRankedContext({
   }
   return { nodes: [...selected.values()], audit: {
     candidateCount: pool.length, unitCount: units.length, selectedRecordCount: selected.size,
-    coverageQueries: coverage.queries, coverageEdgeRows: coverage.edgeRows, coverageSourceRows: coverage.sourceRows,
+    coverageQueries: coverage.stats.queries, coverageEdgeRows: coverage.stats.edgeRows, coverageSourceRows: coverage.stats.sourceRows,
+    coverageMemoryCount: coverage.direct.size, coverageRootCount: coverage.resolved.size, prunedComparisons,
     replyLookupCount: replyReads.size, replyRows, decisions,
   } };
 }

@@ -102,9 +102,9 @@ export function apply(ctx, input) {
   });
   const searchTool = defineTool({
     name: 'suzu_memory_search',
-    description: '需要回想此前交流过的人、事或原话时，检索长期记忆。可用返回的记忆 ID 继续查关联。',
+    description: '需要回想此前交流过的人、事或原话时，检索长期记忆。结合当前对话，用姓名明确查询对象；证据不足时可改写查询，或用返回的记忆 ID 查关联。',
     parameters: {
-      query: { type: 'string', required: true, description: '结合当前对话明确需要回想的人、事或时间。' },
+      query: { type: 'string', required: true, description: '需要回想的人、事或时间；已知姓名时使用姓名。' },
       limit: { type: 'number', description: '返回候选数，1—10。' },
       anchors: { type: 'array', items: { type: 'string' }, description: '此前返回的记忆 ID，最多三个。' },
     },

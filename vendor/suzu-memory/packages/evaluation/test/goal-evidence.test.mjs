@@ -381,6 +381,10 @@ for (const sourceContent of ["我决定整理并发布记忆系统。", "I decid
         for (const record of records.filter(record => snapshot.memories.some(memory => memory.id === record.memory.id))) {
           const generated = await analyzersFor(record)[key]();
           const item = generated.output.analyses[0];
+          if (!broken && key === "targetIntent" && snapshot.memories.length === 1) {
+            assert.deepEqual(snapshot.comparisonMemories.map(memory => memory.memoryId), ["good"]);
+            item.peerRelations = [{ memoryId: "good", relation: "complementary" }];
+          }
           if (broken && key === "targetIntent" && record.memory.id === "bad") {
             if (defect === "format") item.targetMatch = "invalid-match";
             if (defect === "source") item.sourceIds = [records[0].source.id];

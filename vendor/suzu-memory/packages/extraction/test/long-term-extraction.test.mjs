@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { validateMemoryTaskOutput } from '@suzu-memory/service';
 
 import {
   MemoryRepository,
@@ -29,6 +30,33 @@ function temporaryDatabase() {
   const database = openMemoryDatabase(databasePath);
   return { root, database, repository: new MemoryRepository(database) };
 }
+
+for (const language of ['en', 'zh']) test(`archives all directly named participants beyond eight: ${language}`, t => {
+  const database = openMemoryDatabase(':memory:');
+  t.after(() => database.close());
+  const repository = new MemoryRepository(database);
+  const names = Array.from({ length: 10 }, (_, index) => language === 'en' ? `Guest ${index + 1}` : `来宾${index + 1}`);
+  const text = language === 'en' ? `Suzu visited the museum with ${names.join(', ')}.` : `Suzu 和${names.join('、')}一起参观了博物馆。`;
+  const identity = { companionId: 'agent-test', companionName: 'Suzu', primaryUserId: 'human-test', primaryUserName: 'User' };
+  const built = buildLongTermExtractionInput({ identity, memoryOwner: 'Suzu', userName: 'User',
+    messages: [{ id: 'museum-visit', role: 'assistant', speaker: 'Suzu', text, timestamp: '2026-08-04T08:00:00Z' }] });
+  const candidate = { kind: 'event', title: 'Museum visit', content: text, subjectRole: 'agent', subjectName: 'Suzu',
+    actorRoles: names.map(actorName => ({ role: 'participant', actorRole: 'other', actorName, confidence: 1 })),
+    canonicalKey: '', stateFamily: 'not_applicable', stateLabel: '', reality: 'real', evidenceMode: 'observed', temporalState: 'historical',
+    eventDate: '', eventStart: '', eventEnd: '', revisionAction: 'add', retentionReason: 'episodic_event',
+    confidence: 1, importance: 0.5, sourceRefs: [built.messages[0].memoryRef] };
+  const generated = validateMemoryTaskOutput({ schemaName: 'long-term-memory-extraction-v2', schema: LONG_TERM_EXTRACTION_SCHEMA }, { memories: [candidate] });
+  assert.equal(generated.memories[0].actorRoles.length, 10);
+  const archived = archiveLongTermEvidence({ repository, agentId: 'agent-test', identity, messages: built.messages,
+    generatedMemories: generated.memories, batchId: 'museum-visitors', recordedAt: '2026-08-04T08:01:00Z' });
+  assert.equal(archived.memoriesStored, 1, JSON.stringify(archived));
+  const saved = repository.getMemoryDetail('agent-test', archived.candidateResults[0].memoryId);
+  const participants = saved.roles.filter(role => role.role === 'participant');
+  assert.equal(participants.length, 10);
+  assert.equal(new Set(participants.map(role => role.actor_key)).size, 10);
+  assert.deepEqual(participants.map(role => role.metadata.actorName).sort(), [...names].sort());
+  assert.equal(saved.sources.length, 1);
+});
 
 test('apostrophe folding resolves known names without collapsing distinct host identities', () => {
   const participants = buildExtractionParticipants([

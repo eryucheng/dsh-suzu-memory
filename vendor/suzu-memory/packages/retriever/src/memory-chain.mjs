@@ -1,19 +1,12 @@
 import { isProvisionalMemory as isProvisionalNode } from '@suzu-memory/core';
 import { appliedPlasticityAudit, edgeRelationUtilityAdjustment } from './plasticity-ranking.mjs';
-import { timelineOrderTime, timelineEligibleNode, normalizedEvidenceLimit } from './candidate-selection.mjs';
+import { normalizedEvidenceLimit } from './candidate-selection.mjs';
 const parseJson = (value, fallback = {}) => { try { return JSON.parse(value); } catch { return fallback; } };
 const RELATION_UTILITY_BY_VIEW = Object.freeze({
-  timeline: Object.freeze({
-    timeline_next: 1,
-    same_thread: 0.9,
-    corrects: 0.95,
-    supersedes: 0.95,
-    established_from: 1,
-    completes: 0.95,
-    cancels: 0.95,
-  }),
   associative: Object.freeze({
     associated_with: 1,
+    causes: 1,
+    timeline_next: 1,
     part_of_episode: 1,
     supports_topic: 0.9,
     shares_entity: 0.9,
@@ -25,9 +18,6 @@ const RELATION_UTILITY_BY_VIEW = Object.freeze({
     completes: 0.9,
     cancels: 0.9,
     scoped_exception_to: 1,
-  }),
-  causal: Object.freeze({
-    causes: 1,
   }),
 });
 
@@ -135,36 +125,8 @@ function fanoutFactors(traversals, exponent, view, currentId) {
   return { factors, policies, budgetedFanout: budgeted.length };
 }
 
-function canTraverseEdge(edge, currentId, chainIntent) {
-  if (relationUtility(edge.relation, chainIntent.mode) <= 0) return false;
-  if (chainIntent.mode === "causal") {
-    if (edge.relation_review_state !== "accepted") return false;
-    return chainIntent.direction === "forward"
-      ? edge.from_memory_id === currentId
-      : edge.to_memory_id === currentId;
-  }
-  if (chainIntent.mode === "associative") return true;
-  if (chainIntent.mode !== "timeline") return false;
-  const reverseChronology = REVERSE_CHRONOLOGY_RELATIONS.has(edge.relation);
-  if (chainIntent.direction === "forward") {
-    return reverseChronology
-      ? edge.to_memory_id === currentId
-      : edge.from_memory_id === currentId;
-  }
-  if (chainIntent.direction === "backward") {
-    return reverseChronology
-      ? edge.from_memory_id === currentId
-      : edge.to_memory_id === currentId;
-  }
-  return true;
-}
-
-function nodeAllowedForTraversal(node, edge, relationView, discovery) {
-  if (!node || (node.kind === "utterance" && !discovery)) return false;
-  if (node.status === "active") return true;
-  return relationView === "timeline"
-    && REVERSE_CHRONOLOGY_RELATIONS.has(edge.relation)
-    && ["superseded", "disputed"].includes(node.status);
+function nodeAllowedForTraversal(node) {
+  return node && ['active', 'superseded', 'disputed'].includes(node.status);
 }
 
 export function followMemoryChain({
@@ -172,9 +134,6 @@ export function followMemoryChain({
   agentId,
   primary,
   seedCandidates = [],
-  chainIntent,
-  discovery = false,
-  subjectConstraint = null,
   eligibleMemoryIds = null,
   plasticityPolicy,
   options,
@@ -183,29 +142,9 @@ export function followMemoryChain({
   const seeds = seedCandidates.length
     ? seedCandidates
     : [{ node: primary, score: 1 }];
-  const convergenceMode = chainIntent.mode === "none" && (discovery || seeds.length > 1);
-  const relationView = convergenceMode ? "associative" : chainIntent.mode;
-  if (!["timeline", "associative", "causal"].includes(relationView)) {
-    return {
-      nodes: [primary],
-      paths: [],
-      activation: null,
-    };
-  }
-  if (relationView === "timeline" && !timelineEligibleNode(primary)) {
-    return {
-      nodes: [primary],
-      paths: [],
-      activation: null,
-    };
-  }
-  const traversalIntent = {
-    ...chainIntent,
-    mode: relationView,
-    direction: convergenceMode ? "both" : chainIntent.direction,
-  };
+  const relationView = 'associative';
   const maximumWork = Math.max(1, Math.trunc(Number(options.maximumActivationWork) || 100));
-  const edgeLimit = discovery ? ` LIMIT ${Math.trunc(maximumWork)}` : '';
+  const edgeLimit = ` LIMIT ${Math.trunc(maximumWork)}`;
   const outgoing = database.prepare(`
     SELECT edge.*, proposal.review_state AS relation_review_state,
       learned.value AS learned_utility_value,
@@ -238,11 +177,10 @@ export function followMemoryChain({
   `);
   const nodeQuery = database.prepare(`
     SELECT * FROM memory_nodes
-    WHERE agent_id = ? AND id = ? AND status <> 'deleted' ${discovery ? '' : "AND kind <> 'utterance'"}
+    WHERE agent_id = ? AND id = ? AND status <> 'deleted'
   `);
   const maximumDepth = Math.max(1, Number(options.maximumChainDepth));
-  const maximumNodes = Math.max(1, Number(discovery
-    ? options.maximumConvergenceCandidates : options.maximumChainMemories));
+  const maximumNodes = Math.max(1, Number(options.maximumConvergenceCandidates));
   const minimumScore = Math.max(0, Number(options.minimumChainPathScore));
   const minimumContribution = Math.max(0, Number(options.minimumActivationContribution));
   const primarySeedScore = Math.max(0.0001, Number(seeds[0]?.score) || 1);
@@ -258,11 +196,10 @@ export function followMemoryChain({
     seedId: candidate.node.id,
   }));
   const queue = [];
-  const subjectRejectedMemoryIds = new Set();
   for (const seed of seedValues) {
     if (!contributions.has(seed.id)) contributions.set(seed.id, new Map());
     contributions.get(seed.id).set(seed.seedId, seed);
-    if (!isProvisionalNode(seed.node) && (!discovery || seed.node.kind !== 'utterance')) queue.push(seed);
+    if (!isProvisionalNode(seed.node) && seed.node.kind !== 'utterance') queue.push(seed);
   }
   const traversalCache = new Map(), nodeCache = new Map();
   let processedStates = 0;
@@ -276,8 +213,9 @@ export function followMemoryChain({
       const traversable = [
         ...outgoing.all(relationView, agentId, current.id),
         ...incoming.all(relationView, agentId, current.id),
-      ].filter((edge) => canTraverseEdge(edge, current.id, traversalIntent)
-        || (discovery && edge.relation === 'supported_by' && edge.from_memory_id === current.id))
+      ].filter((edge) => (relationUtility(edge.relation, relationView) > 0
+        && (edge.relation !== 'causes' || edge.relation_review_state === 'accepted'))
+        || (edge.relation === 'supported_by' && edge.from_memory_id === current.id))
         .map((edge) => {
           const neighborId = edge.from_memory_id === current.id
             ? edge.to_memory_id
@@ -285,16 +223,10 @@ export function followMemoryChain({
           if (eligibleMemoryIds && !eligibleMemoryIds.has(neighborId)) return null;
           if (!nodeCache.has(neighborId)) nodeCache.set(neighborId, nodeQuery.get(agentId, neighborId));
           const node = nodeCache.get(neighborId);
-          if (!nodeAllowedForTraversal(node, edge, relationView, discovery)) return null;
-          if (
-            relationView === "associative"
-            && subjectConstraint?.hardExcludedMemoryIds?.has(neighborId)
-          ) {
-            subjectRejectedMemoryIds.add(neighborId);
-            return null;
-          }
+          if (!nodeAllowedForTraversal(node)) return null;
+
           const propagation = traversalPropagationPolicy(edge, current.id, relationView);
-          const learned = propagation === "mandatory" || (discovery && edge.relation === 'supported_by') ? null : edgeRelationUtilityAdjustment(
+          const learned = propagation === "mandatory" || (edge.relation === 'supported_by') ? null : edgeRelationUtilityAdjustment(
             edge.learned_utility_value === null || edge.learned_utility_value === undefined
               ? null
               : {
@@ -311,14 +243,14 @@ export function followMemoryChain({
             node,
             propagationPolicy: propagation,
             learned,
-            strength: discovery && edge.relation === 'supported_by'
+            strength: edge.relation === 'supported_by'
               ? Math.max(0, Number(edge.weight)) * Math.max(0, Number(edge.confidence))
               : edgeTraversalStrength(edge, relationView, learned?.multiplier ?? 1),
           };
         })
         .filter((value) => Boolean(value?.node));
       const fanout = fanoutFactors(
-        discovery ? traversable.filter(value => value.edge.relation !== 'supported_by') : traversable,
+        traversable.filter(value => value.edge.relation !== 'supported_by'),
         options.fanoutSuppressionExponent,
         relationView,
         current.id,
@@ -329,7 +261,7 @@ export function followMemoryChain({
     const { traversable, fanout } = view;
     for (const traversal of traversable) {
       const { edge, neighborId, node } = traversal;
-      const directEvidence = discovery && edge.relation === 'supported_by';
+      const directEvidence = edge.relation === 'supported_by';
       const fanoutFactor = directEvidence ? 1 : fanout.factors.get(edge.id) || 0;
       const score = current.score
         * traversal.strength
@@ -358,21 +290,19 @@ export function followMemoryChain({
           weight: Number(edge.weight),
           confidence: Number(edge.confidence),
           relationView,
-          relationUtility: discovery && edge.relation === 'supported_by' ? 1 : relationUtility(edge.relation, relationView),
+          relationUtility: edge.relation === 'supported_by' ? 1 : relationUtility(edge.relation, relationView),
           learnedRelationUtility: traversal.learned ? {
             value: traversal.learned.value,
             policyVersion: traversal.learned.policyVersion,
             configurationVersion: traversal.learned.configurationVersion,
             multiplier: traversal.learned.multiplier,
           } : null,
-          appliedRelationUtility: (discovery && edge.relation === 'supported_by' ? 1 : relationUtility(edge.relation, relationView))
+          appliedRelationUtility: (edge.relation === 'supported_by' ? 1 : relationUtility(edge.relation, relationView))
             * (traversal.learned?.multiplier ?? 1),
           propagationPolicy: directEvidence ? 'direct-evidence' : fanout.policies.get(edge.id),
           traversalFromMemoryId: current.id,
           traversalToMemoryId: neighborId,
-          chronologyDirection: relationView === "timeline"
-            ? traversalIntent.direction
-            : "not-applicable",
+          chronologyDirection: "not-applicable",
           fanout: fanout.budgetedFanout,
           fanoutFactor,
         }],
@@ -412,21 +342,15 @@ export function followMemoryChain({
       || right.sourceCount - left.sourceCount
       || right.node.importance - left.node.importance
     ));
-  const values = (discovery
-    ? [...selectedSeeds, ...related].sort((left, right) => right.activation - left.activation)
-    : [...selectedSeeds, ...related]).slice(0, maximumNodes);
-  if (chainIntent.mode === "timeline") {
-    values.sort((left, right) => (
-      timelineOrderTime(left.node) - timelineOrderTime(right.node)
-    ));
-  }
+  const values = [...selectedSeeds, ...related].sort((left, right) => right.activation - left.activation).slice(0, maximumNodes);
+
   return {
     nodes: values.map((value) => value.node),
-    ...(discovery ? { candidates: values.map(value => ({
+    candidates: values.map(value => ({
       node: value.node,
       score: value.best.score * primarySeedScore,
       admission: 'graph-linked',
-    })) } : {}),
+    })),
     paths: values.filter((value) => value.best.path.length).map((value) => ({
       memoryId: value.id,
       score: value.activation,
@@ -437,7 +361,6 @@ export function followMemoryChain({
     activation: {
       relationView,
       seedMemoryIds: seedValues.map((seed) => seed.id),
-      subjectRejectedMemoryIds: [...subjectRejectedMemoryIds].sort(),
       processedStates,
       edgeLookupCount: traversalCache.size * 2,
       nodeLookupCount: nodeCache.size,

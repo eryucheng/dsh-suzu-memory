@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   applyMemoryCandidate,
+  enqueueMemoryMaintenanceTasks,
   isStatefulMemoryKind,
+  MAINTENANCE_TASK_TYPES,
   normalizeStateAnalysisTargetSpec,
 } from "@suzu-memory/core";
 import {
@@ -15,6 +17,7 @@ import {
   buildArchivedUtteranceIdentity,
 } from "./utterance-evidence.mjs";
 import { buildExtractionParticipants, resolveExtractionParticipant, normalizeExtractionParticipantRoles, extractionParticipantNameKey } from './participant-identity.mjs';
+import { createExtractionTimeValidator } from './temporal-evidence.mjs';
 
 const PACKAGE_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DEFAULT_PROMPT_PATH = path.join(PACKAGE_ROOT, "resources", "system-prompt.md");
@@ -427,6 +430,13 @@ export function fallbackStateAnalysisToProvisionalReview({
       reasonCodes: [fallbackReason],
       provisionalMemoryId: provisional.id,
     });
+    enqueueMemoryMaintenanceTasks({
+      repository,
+      agentId: request.agent_id,
+      batchId: request.batch_id,
+      memoryIds: [provisional.id],
+      taskTypes: [MAINTENANCE_TASK_TYPES.memoryEmbedding],
+    });
     const resolvedRequest = repository.resolveStateAnalysisRequest({
       agentId: request.agent_id,
       requestId: request.id,
@@ -459,7 +469,9 @@ export function archiveLongTermEvidence({
   recordedAt,
   conversationTopology,
   identity = {},
+  timeZone,
 }) {
+  const validateTime = createExtractionTimeValidator(messages, timeZone);
   identity = { ...identity, participants: identity.participants || buildExtractionParticipants(messages, { ...identity, agentId }) };
   if (messages.some(message => message.eventSource)) {
     identity = { ...identity, eventSourceIdentity: true };
@@ -636,6 +648,15 @@ export function archiveLongTermEvidence({
           status: "reject",
           reasons: ["unknown-source-ref"],
           missingRefs,
+        }, referenced);
+        continue;
+      }
+      try {
+        validateTime(generated);
+      } catch (error) {
+        if (error.code !== 'MEMORY_EXTRACTION_TIME_CONFLICT') throw error;
+        keepResult(candidateIndex, generated, {
+          status: 'review', reasons: ['source-time-conflict'], timeConflict: error.message,
         }, referenced);
         continue;
       }

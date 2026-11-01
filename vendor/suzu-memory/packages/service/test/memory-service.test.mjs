@@ -1134,14 +1134,6 @@ test("service carries configured identities from input through archive into enti
     persistTrace: false,
   });
   assert.equal(result.status, "ready");
-  assert.deepEqual(
-    {
-      matched: result.seedRouting.subjectRouting.query.matched,
-      role: result.seedRouting.subjectRouting.query.role,
-      key: result.seedRouting.subjectRouting.query.key,
-    },
-    { matched: true, role: "user", key: "caroline" },
-  );
   assert.ok(result.fragments.some((fragment) => identities.actorMemoryIds.includes(fragment.memoryId)));
   const entity = result.matchedEntities.find((item) => item.entityId === identities.user.entity_id);
   assert.ok(entity);

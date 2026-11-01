@@ -10,7 +10,7 @@ import * as plugin from '../../src/index.mjs';
 import { sessionMemoryId, sourceScope } from '../../src/events.mjs';
 import { host, config, user, assistant, enableConversation } from '../helpers.mjs';
 
-test('DSH memory tool resolves model-authored pronouns and named people against the right actors', async t => {
+test('DSH memory tool preserves speaker attribution for model-authored queries', async t => {
   const { ctx } = await host(t);
   await ctx.plugin(SessionProjectionRegistry);
   await ctx.plugin(AgentRegistry);
@@ -50,7 +50,16 @@ test('DSH memory tool resolves model-authored pronouns and named people against 
       const text = result.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
       const candidateIds = text.match(/^记忆 ID：(.*)$/mu)?.[1].split('、').filter(Boolean) || [];
       assert.ok(candidateIds.includes(ids[role]), text);
-      assert.ok(!candidateIds.includes(ids[role === 'user' ? 'agent' : 'user']), text);
+      const recordIds = [...text.matchAll(/^记忆编号：(.*)$/gmu)].map(match => match[1]);
+      assert.deepEqual(candidateIds, recordIds, 'only the displayed records may be used as continuation anchors');
+      for (const [holder, name] of [['user', 'Rin'], ['agent', 'Suzu']]) {
+        if (!recordIds.includes(ids[holder])) continue;
+        const start = text.indexOf('记忆编号：' + ids[holder] + '\n');
+        const end = text.indexOf('\n\n记忆编号：', start + 1);
+        const record = text.slice(start, end < 0 ? undefined : end);
+        assert.match(record, new RegExp('\\] ' + name + '：'));
+        assert.ok(record.includes(holder === 'user' ? 'I like hotpot.' : 'I dislike hotpot.'));
+      }
       const sourcePhrase = role === "user" ? "I like hotpot." : "I dislike hotpot.";
       assert.equal(text.split(sourcePhrase).length - 1, 1, "selected source text must appear once");
     });
@@ -59,7 +68,7 @@ test('DSH memory tool resolves model-authored pronouns and named people against 
       assert.ok(states.length > 0);
       assert.ok(states.every(state => state.activation_count > 0));
     });
-    await t.test('structured preferences keep the queried holder and reject the other actor', async () => {
+    await t.test('structured preferences retain their distinct holders and supporting utterances', async () => {
       const sources = Object.fromEntries(utterances.map(node => [node.subject_role, memory.getMemory(node.id).sources[0].id]));
       memory.withRepository(repository => {
         for (const [role, key, name] of [['user', 'user', 'Rin'], ['agent', sessionMemoryId(value.id), 'Suzu']]) {
@@ -72,12 +81,16 @@ test('DSH memory tool resolves model-authored pronouns and named people against 
         }
       });
       const result = await ctx.tools.execute({ callId: ToolCallId('structured-preference'),
-        name: 'suzu_memory_search', arguments: { query: '你喜欢吃火锅吗' }, agent: handle.agent, signal: new AbortController().signal });
+        name: 'suzu_memory_search', arguments: { query: 'Rin喜欢吃火锅吗' }, agent: handle.agent, signal: new AbortController().signal });
       assert.equal(result.isError, false, JSON.stringify(result));
       const text = result.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
       const candidateIds = text.match(/^记忆 ID：(.*)$/mu)?.[1].split('、').filter(Boolean) || [];
       assert.ok(candidateIds.includes('user-hotpot-preference'), text);
-      assert.ok(!candidateIds.includes('agent-hotpot-preference'), text);
+      assert.ok(text.includes('Rin明确表示喜欢吃火锅。'), text);
+      if (candidateIds.includes('agent-hotpot-preference')) assert.ok(text.includes('Suzu明确表示不喜欢吃火锅。'), text);
+      for (const [role, phrase] of [['user', 'I like hotpot.'], ['agent', 'I dislike hotpot.']]) {
+        if (candidateIds.includes(ids[role])) assert.equal(text.split(phrase).length - 1, 1);
+      }
     });
   } finally {
     await handle.dispose();

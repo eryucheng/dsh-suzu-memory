@@ -6,14 +6,16 @@
 </p>
 
 <p align="center">
+  <a href="#记忆效果"><img src="https://img.shields.io/badge/LoCoMo-89.87%25-9365cb" alt="LoCoMo 准确率 89.87%"></a>
   <a href="https://github.com/eryucheng/dsh-suzu-memory/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/eryucheng/dsh-suzu-memory/ci.yml?branch=main&amp;label=CI&amp;logo=github" alt="CI 构建状态"></a>
-  <a href="https://github.com/eryucheng/dsh-suzu-memory/releases/latest"><img src="https://img.shields.io/badge/release-v0.6.0-9365cb" alt="版本 0.6.0"></a>
+  <a href="https://github.com/eryucheng/dsh-suzu-memory/releases/latest"><img src="https://img.shields.io/badge/release-v0.7.0-9365cb" alt="版本 0.7.0"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-0.2.1--rc.3-4d6bfe" alt="适配 DSH 0.2.1-rc.3"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-22.19%2B%20%7C%2024%2B-5fa04e?logo=nodedotjs&amp;logoColor=white" alt="Node.js 22.19+ 或 24+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-777bc4" alt="Apache License 2.0"></a>
 </p>
 
 <p align="center">
+  <a href="#记忆效果"><b>记忆效果</b></a> ·
   <a href="#快速开始"><b>快速开始</b></a> ·
   <a href="#工作原理"><b>工作原理</b></a> ·
   <a href="#使用指南"><b>使用指南</b></a> ·
@@ -27,6 +29,28 @@
 
 它还可以接管压缩摘要的写法：摘要只负责接住当前的话题，被压缩掉的细节交给长期记忆保存。
 
+## 记忆效果
+
+在 [LoCoMo](https://github.com/snap-research/locomo) 的 10 组英文长对话、1540 道问答题上，模型通过 `suzu_memory_search` 按需检索 Suzu Memory，准确率达到 **89.87%**，是直接阅读完整对话（93.51%）的 96%。时间类问题的准确率还高于阅读完整对话。
+
+<p align="center">
+  <picture>
+    <source media="(max-width: 600px)" srcset="docs/images/locomo-overview-mobile.svg">
+    <img src="docs/images/locomo-overview.svg" alt="LoCoMo 对照评测：无历史 0.39%，Suzu Memory 89.87%（每题累计 4,375 token），完整对话 93.51%（每题 21,490 token，随对话增长）。Suzu Memory 达到完整对话准确率的 96.1%，各组对话的每题输入保持在 4,033–4,664 token，时间类问题高于完整对话 0.93 个百分点。" width="1120">
+  </picture>
+</p>
+
+**记忆注入的量不随对话变长。** 每次检索都有条数和字符上限。LoCoMo 中对话长度翻了一倍，完整对话的每题输入从约 1.3 万涨到 2.5 万 token，记忆组一直保持在约 4 千 token。DSH 会话越聊越长，压缩会丢掉细节，按需检索可以用固定的少量输入把它们找回来。
+
+<p align="center">
+  <picture>
+    <source media="(max-width: 600px)" srcset="docs/images/locomo-input-mobile.svg">
+    <img src="docs/images/locomo-input.svg" alt="作答输入与对话长度：10 组对话从 52,707 到 106,835 字符。完整对话组每题输入从 12,990 增至 24,533 token，与长度的相关系数为 0.99；Suzu Memory 每题输入保持在 4,033–4,664 token，相关系数为 0.09。" width="1120">
+  </picture>
+</p>
+
+评测在 Suzu Memory 上游仓库中进行：三组使用同一作答模型（`deepseek-v4-flash`）、提示词和裁判，类别 5 不计分。模型、提示词、逐题结果与离线复核见[评测报告](https://github.com/eryucheng/suzu-memory/blob/main/benchmarks/locomo/2026-11-01/README.md)。
+
 ## 特性
 
 <table>
@@ -34,21 +58,35 @@
 <td width="50%" valign="top">
 
 **一个会话，一份记忆**<br>
-每个会话有独立的记忆库、人设和压缩设置，恢复同一会话时接着用。分支会话从自己的日志区间建立记忆，不读取父会话的记忆库。
+每个会话默认关闭，手动开启后才会采集和整理。各会话有独立的记忆库、人设和压缩设置；分支会话从自己的日志区间建立记忆，不读取父会话的记忆库。
 
 </td>
 <td width="50%" valign="top">
 
 **按需回想，不占上下文**<br>
-模型通过 `suzu_memory_search` 自行决定何时检索，不会在每次发送消息时把全部记忆塞进上下文。
+模型通过 `suzu_memory_search` 自行决定何时检索，还可以用返回的记忆 ID 继续查关联。每次检索默认最多返回 5 条、约 1.2 万字符，会话再长，注入的内容也不会跟着膨胀。
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-**接管压缩摘要**<br>
-可以为会话换上自己的压缩提示词，内置一套聊天模板：摘要只保留继续对话需要的内容，旧细节留给长期记忆。
+**整理时机由你决定**<br>
+提供随时整理、仅在波谷时段整理和手动整理三种模式。默认的波谷时段避开 DeepSeek 公布的工作日高峰。
+
+</td>
+<td valign="top">
+
+**长对话也压得动**<br>
+可以给会话换上聊天用的压缩提示词。较长的压缩材料按模型容量分段摘要再合并，被压掉的细节交给长期记忆。
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**记忆图谱与审核台**<br>
+在独立网页中用三维图谱浏览记忆和关联，点开节点就能看到原话来源；审核台可以核对证据、人工审核和创建备份。
 
 </td>
 <td valign="top">
@@ -61,14 +99,14 @@
 <tr>
 <td valign="top">
 
-**原话可查**<br>
-自带 Suzu Memory 审核台，可以核对每条记忆的原话证据、人工审核、查看处理状态、创建备份。
+**装上就能用**<br>
+安装包自带 Memory 核心，不用另外部署服务。默认沿用会话的模型与认证，Embedding 是可选项。
 
 </td>
 <td valign="top">
 
-**装上就能用**<br>
-安装包自带 Memory 核心，不用另外部署服务。默认沿用会话的模型与认证；Embedding 是可选项。
+**数据留在本地**<br>
+记忆库和原话证据保存在 DSH 的 profile 目录下。只有整理和向量化时，才会把所需材料发给你使用的服务商。
 
 </td>
 </tr>
@@ -96,9 +134,10 @@
 
 记忆的提取、整理和检索都由 [Suzu Memory](https://github.com/eryucheng/suzu-memory) 完成。它是一个本地优先的长期记忆引擎，插件只负责把 DSH 会话接上去，核心算法与上游保持一致。
 
-- **记住经历**：保留人物、时间与来源，连接具体事件、主题和共同经历。
-- **理解变化**：区分偏好、习惯、目标和现实条件，用新证据更新认识，同时保留历史。
-- **带着依据召回**：组合词法、BM25、实体与可选的向量线索，沿关联展开原话和支持、反对证据，在预算内返回上下文。
+- **每条记忆都有出处**：保留原话、发言者和时间，召回的记忆可以追溯到当时的原话。
+- **认识会变，历史留着**：用十二类人物认识组织偏好、习惯、目标和关系。新证据可以补充、纠正或取代旧认识，原来的状态和正反证据都保留。
+- **听得懂时间**：解析“前几天”“两周前”“last time”这类中英文表达，按精度调整排序，日期对不上的相关记忆不会因此被排除。
+- **带着依据召回**：组合词法、BM25、实体与可选的向量线索，沿关联展开原话和支持、反对证据，在预算内返回。
 
 <p align="center">
   <picture>
@@ -113,17 +152,18 @@
 
 | 主题 | 内容 |
 | --- | --- |
-| [工作机制](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#工作机制) | 记录经历、后台整理、按需召回的完整流程 |
-| [多路检索与证据展开](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#多路检索与证据展开) | `suzu_memory_search` 背后的检索算法 |
-| [人物认识的十二个维度](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#人物认识的十二个维度) | 偏好、习惯、目标、关系等认识如何区分和组织 |
-| [状态演化与来源追溯](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#状态演化与来源追溯) | 认识如何随新证据更新，原话如何追溯 |
-| [界面预览](https://github.com/eryucheng/suzu-memory/blob/d4b649b81ace30f233d2cebd487c3a4360d98b07/README.md#界面预览) | 记忆审核台和三维记忆网络 |
+| [记忆评测](https://github.com/eryucheng/suzu-memory#记忆评测) | LoCoMo 对照评测与完整报告 |
+| [工作方式](https://github.com/eryucheng/suzu-memory#工作方式) | 记录经历、后台整理、按需召回的完整流程 |
+| [多路检索与证据展开](https://github.com/eryucheng/suzu-memory#多路检索与证据展开) | `suzu_memory_search` 背后的检索算法 |
+| [听得懂时间](https://github.com/eryucheng/suzu-memory#听得懂时间) | 中英文时间表达如何影响召回排序 |
+| [人物认识的十二个维度](https://github.com/eryucheng/suzu-memory#人物认识的十二个维度) | 偏好、习惯、目标、关系等认识如何区分和组织 |
+| [状态演化与来源追溯](https://github.com/eryucheng/suzu-memory#状态演化与来源追溯) | 认识如何随新证据更新，事件如何接续，原话如何追溯 |
 
 ## 兼容性
 
 | 项目 | 版本 |
 | --- | --- |
-| 插件 | `0.6.0` |
+| 插件 | `0.7.0` |
 | DeepSeek Harness | `>=0.2.1-rc.2 <0.3.0-0` |
 | 开发与测试使用 | `0.2.1-rc.3` |
 | Node.js | `^22.19.0` 或 `>=24.0.0` |
@@ -132,11 +172,11 @@
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/eryucheng/dsh-suzu-memory/releases/latest) 下载 `dsh-suzu-memory-0.6.0.tgz`，**保持 `.tgz` 格式，不要解压**。
+1. 从 [Releases](https://github.com/eryucheng/dsh-suzu-memory/releases/latest) 下载 `dsh-suzu-memory-0.7.0.tgz`，**保持 `.tgz` 格式，不要解压**。
 2. 打开 DSH 的「插件」页面，选择「添加插件 → 安装第三方插件」。
 3. 在「包名或地址」中填入安装包的**绝对路径**（不加引号），例如：
    ```text
-   D:/Downloads/dsh-suzu-memory-0.6.0.tgz
+   D:/Downloads/dsh-suzu-memory-0.7.0.tgz
    ```
 4. 按提示完成安装，确认 `dsh-suzu-memory` 已启用。如果 DSH 提示需要重启，就重启一次。
 5. 打开「设置 → Suzu Memory」，在顶部选择需要使用记忆的会话，勾选「启用此会话的 Suzu Memory」。**每个会话默认关闭，需要分别手动开启。**
@@ -157,7 +197,7 @@ Web 部署时，填写的路径必须是 **DSH 服务所在机器**上的文件�
 也可以用命令行安装到 Web profile：
 
 ```powershell
-dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.6.0.tgz"
+dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.7.0.tgz"
 ```
 
 桌面版建议用插件页面安装。如果要用命令行管理桌面版插件，需要使用桌面版安装目录下 `resources/runtime/cli/bin/` 中自带的 `dsh`（Windows 上是 `dsh.cmd`），用法见 [DSH 桌面版命令行说明](https://github.com/deepseek-ai/deepseek-harness/blob/1f81c047fc48fa190a683e469daa699857e9afe8/apps/desktop/README.md#bundled-command-runtime)。通过 npm 安装的 `dsh` 管理不了桌面版的 profile。
@@ -386,7 +426,7 @@ New-Item -ItemType Directory -Force ./dist
 npm pack --pack-destination ./dist
 ```
 
-执行后会生成 `dist/dsh-suzu-memory-0.6.0.tgz`，按[快速开始](#快速开始)安装即可。测试包含 DSH 官方运行时的集成测试，使用受控的模型适配器，不需要真实的 API Key。
+执行后会生成 `dist/dsh-suzu-memory-0.7.0.tgz`，按[快速开始](#快速开始)安装即可。测试包含 DSH 官方运行时的集成测试，使用受控的模型适配器，不需要真实的 API Key。
 
 ```text
 dsh-suzu-memory/
@@ -408,7 +448,7 @@ dsh-suzu-memory/
 
 适配代码都在 `src/`，`vendor/suzu-memory/` 下的核心算法源码不做修改，上游版本和固定提交记录在 [UPSTREAM.json](UPSTREAM.json)。安装包通过 bundled dependencies 携带所需的 Memory 包及其资源。
 
-`docs/images/retrieval*.svg` 与「记忆系统」一节的原理说明固定在所链接的上游文档版本；内置引擎源码的版本以 [UPSTREAM.json](UPSTREAM.json) 为准。
+「记忆系统」一节的原理说明与评测链接指向上游仓库的最新文档；内置引擎源码的版本以 [UPSTREAM.json](UPSTREAM.json) 为准。
 
 ---
 

@@ -11,6 +11,8 @@ import {
   normalizeStateAnalysisTargetSpec,
 } from "@suzu-memory/core";
 import { syncMemoryEmbeddings } from '@suzu-memory/embedding-indexer';
+import { fallbackStateAnalysisToProvisionalReview } from '@suzu-memory/extraction';
+import { runEmbeddingMaintenance } from '@suzu-memory/maintenance';
 import { prepareStateMemoryCandidates } from '../src/state-memory-candidates.mjs';
 import { MemoryService, assertMemoryTaskRequest, validateMemoryTaskOutput } from '@suzu-memory/service';
 
@@ -229,8 +231,15 @@ for (const scenario of ['active', 'pending', 'ambiguous', 'invalid']) test(`earl
   }
   const pending = first.repository.listPendingProvisionalMemories('agent-test').filter(memory => memory.id !== old.id);
   if (pending.length) {
-    await syncMemoryEmbeddings({ repository: first.repository, agentId: 'agent-test', embeddingProvider,
-      memoryIds: pending.map(memory => memory.id) });
+    const queuedIds = new Set(first.repository.listMaintenanceTasks('agent-test', {
+      taskTypes: ['memory-embedding'], statuses: ['pending'], limit: 100,
+    }).flatMap(task => task.payload.memoryIds));
+    for (const memory of pending) assert.ok(queuedIds.has(memory.id), 'pending evidence must enter the embedding queue');
+    await runEmbeddingMaintenance({ repository: first.repository, agentId: 'agent-test', embeddingProvider,
+      maximumTasks: 100 });
+    for (const memory of pending) assert.ok(first.repository.listEmbeddings('agent-test', 'test-embedding', {
+      includeArchived: true,
+    }).some(row => row.memory_id === memory.id));
     assert.equal(embeddingCalls.length, 2);
   }
   if (scenario === 'active') {
@@ -553,8 +562,8 @@ function combinedGoalGenerator(fixture, calls) {
   return generator;
 }
 
-test("an indivisible specialist budget overflow preserves evidence for review without provider retries", async t => {
-  const fixture = setupRequest();
+for (const language of ['zh', 'en']) test(`specialist fallback queues searchable evidence without provider retries: ${language}`, async t => {
+  const fixture = setupRequest({ content: language === 'en' ? 'I have always enjoyed puzzle games.' : '我一直很喜欢解谜游戏。' });
   t.after(() => fixture.database.close());
   let calls = 0;
   const generator = async () => { calls += 1; throw new Error("Provider must not be called"); };
@@ -570,8 +579,41 @@ test("an indivisible specialist budget overflow preserves evidence for review wi
   const pending = fixture.repository.listPendingProvisionalMemories("agent-test");
   assert.equal(pending.length, 1);
   assert.equal(pending[0].content, fixture.source.content);
+  const tasks = fixture.repository.listMaintenanceTasks('agent-test', { taskTypes: ['memory-embedding'] });
+  assert.equal(tasks.length, 1);
+  assert.deepEqual(tasks[0].payload.memoryIds, [pending[0].id]);
+  let embeddingCalls = 0;
+  const embeddingProvider = Object.assign(async () => {
+    embeddingCalls++;
+    return { model: 'fallback-test', vector: [1, 0] };
+  }, { model: 'fallback-test', dimensions: 2 });
+  const indexed = await runEmbeddingMaintenance({ repository: fixture.repository, agentId: 'agent-test', embeddingProvider });
+  assert.equal(indexed.status, 'completed');
+  assert.equal(embeddingCalls, 1);
+  assert.ok(fixture.repository.listEmbeddings('agent-test', 'fallback-test', { includeArchived: true })
+    .some(row => row.memory_id === pending[0].id));
+  assert.equal(fixture.repository.getMemory(pending[0].id).layer, 'provisional');
+  assert.equal(fixture.repository.listPendingProvisionalMemories('agent-test').length, 1);
   assert.equal((await processPendingStateAnalysisRequests({ repository: fixture.repository, agentId: "agent-test",
     generator, maxRequests: 10 })).selected, 0);
+  assert.equal((await runEmbeddingMaintenance({ repository: fixture.repository, agentId: 'agent-test', embeddingProvider })).selected, 0);
+  assert.equal(embeddingCalls, 1);
+});
+
+test('fallback evidence and its embedding task commit together', t => {
+  const fixture = setupRequest();
+  t.after(() => fixture.database.close());
+  const enqueue = fixture.repository.enqueueMaintenanceTask;
+  fixture.repository.enqueueMaintenanceTask = () => { throw new Error('Queue unavailable'); };
+  assert.throws(() => fallbackStateAnalysisToProvisionalReview({ repository: fixture.repository, request: fixture.request }),
+    /Queue unavailable/);
+  assert.equal(fixture.repository.getStateAnalysisRequest('agent-test', fixture.request.id).status, 'pending');
+  assert.equal(fixture.repository.listPendingProvisionalMemories('agent-test').length, 0);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM memory_nodes WHERE layer='provisional'").get().count, 0);
+  fixture.repository.enqueueMaintenanceTask = enqueue;
+  const result = fallbackStateAnalysisToProvisionalReview({ repository: fixture.repository, request: fixture.request });
+  assert.equal(result.request.status, 'completed');
+  assert.equal(fixture.repository.listMaintenanceTasks('agent-test', { taskTypes: ['memory-embedding'] }).length, 1);
 });
 
 test("oversized complete evidence snapshots enter review without repeated preparation", async t => {

@@ -39,7 +39,7 @@ function looseExtractionObject(output) {
   }
 }
 
-function retainValidExtractionCandidates(output) {
+function retainValidExtractionCandidates(output, context) {
   const parsed = looseExtractionObject(output);
   if (!parsed || !Array.isArray(parsed.memories)) return null;
   const memories = [];
@@ -47,7 +47,7 @@ function retainValidExtractionCandidates(output) {
   const invalidCandidates = [];
   parsed.memories.forEach((candidate, index) => {
     try {
-      memories.push(parseGeneratedLongTermExtraction({ memories: [candidate] }).memories[0]);
+      memories.push(parseGeneratedLongTermExtraction({ memories: [candidate] }, context).memories[0]);
     } catch (error) {
       rejected.push({ index, reason: clean(error?.message).slice(0, 500) });
       invalidCandidates.push(candidate);
@@ -306,8 +306,10 @@ export async function generateCompanionEventBatch({ events, previousContextEvent
   memoriesOverride = null, systemPrompt = '', timeZone }) {
   const { built, request: generationRequest } = buildCompanionExtractionRequest({ events,
     previousContextEvents, continuationGuidanceEvents, archiveWindows, identity, systemPrompt, timeZone });
+  const timeContext = { messages: built.messages, timeZone: built.timeZone };
   if (Array.isArray(memoriesOverride)) {
     return {
+      timeZone: built.timeZone,
       participants: built.participants,
       messages: built.messages,
       archiveWindows: built.archiveWindows,
@@ -315,7 +317,7 @@ export async function generateCompanionEventBatch({ events, previousContextEvent
       continuationGuidanceMessages: built.continuationGuidanceMessages,
       input: built.input,
       generation: {
-        output: parseGeneratedLongTermExtraction({ memories: memoriesOverride }),
+        output: parseGeneratedLongTermExtraction({ memories: memoriesOverride }, timeContext),
         usage: {},
         model: "",
         requestId: "",
@@ -339,9 +341,9 @@ export async function generateCompanionEventBatch({ events, previousContextEvent
   assertEventSourceExecutionCurrent();
   let parsedOutput;
   try {
-    parsedOutput = parseGeneratedLongTermExtraction(generation.output);
+    parsedOutput = parseGeneratedLongTermExtraction(generation.output, timeContext);
   } catch (validationError) {
-    const salvage = retainValidExtractionCandidates(generation.output);
+    const salvage = retainValidExtractionCandidates(generation.output, timeContext);
     const initialRequestId = generation.requestId;
     const valid = salvage?.output.memories || [];
     let repair = { memories: [], recoveredCount: 0, rejected: [], failures: [], returnedCount: 0, generations: [], state: null };
@@ -351,7 +353,7 @@ export async function generateCompanionEventBatch({ events, previousContextEvent
     if (candidates.length) {
       try {
         repair = await repairExtractionCandidates({
-          state: { candidates, messages: built.messages, participants: built.participants }, generator,
+          state: { candidates, messages: built.messages, participants: built.participants, timeZone: built.timeZone }, generator,
           sourceMaterial: generationRequest.sourceMaterial,
         });
       } catch (error) {
@@ -407,6 +409,7 @@ export async function generateCompanionEventBatch({ events, previousContextEvent
     knownParticipantRoleCorrections: participantNormalization.corrections,
   };
   return {
+    timeZone: built.timeZone,
     messages: built.messages,
     participants: built.participants,
     archiveWindows: built.archiveWindows,
@@ -481,6 +484,7 @@ export async function retryCompanionExtractionRepair({ repository, agentId, task
     const current = repository.getMaintenanceTask(agentId, task.id);
     if (current?.status !== 'failed' || current.review_state !== 'pending') throw new Error('Extraction repair review is no longer pending.');
     const archive = archiveLongTermEvidence({ repository, agentId, messages: state.messages,
+      timeZone: state.timeZone,
       generatedMemories: generation.output.memories,
       candidateIndexOffset: repository.getNextIngestionCandidateIndex(agentId, task.payload.batchId), batchId: task.payload.batchId,
       conversationTopology: state.messages.some(message => message.eventSource) ? '' : DIRECT_USER_AGENT_DM_TOPOLOGY,
@@ -539,6 +543,7 @@ export function archiveCompanionEventBatch({
       sourceLocator: "",
       sourceKind: "input-event",
       messages: generated.messages,
+      timeZone: generated.timeZone,
       generatedMemories: generated.generation.output.memories,
       batchId,
       recordedAt: completedAt,

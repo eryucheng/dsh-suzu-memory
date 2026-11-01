@@ -32,7 +32,7 @@ function fixture(t, texts, { independentReverse = false, sameTime = false } = {}
 }
 
 function generatorFor({ comparison = 'supports', forgedReference = false,
-  extraDimension = false, duplicateSupport = false, counterpartAttribution = 'explicit_counterpart_statement',
+  groundingDimension = 'support', duplicateSupport = false, counterpartAttribution = 'explicit_counterpart_statement',
   counterpartDirection } = {}) {
   const calls = [];
   const generator = Object.assign(async request => {
@@ -47,10 +47,9 @@ function generatorFor({ comparison = 'supports', forgedReference = false,
       const own = memory.actorRoles.some(role => role.role === 'speaker'
         && role.actorRole === snapshot.target.subjectRole && role.actorKey === snapshot.target.subjectKey);
       if (key === 'relationGrounding') {
-        const support = { ...common, targetMatch: 'exact', relationType: 'support',
+        const support = { ...common, targetMatch: 'exact', relationType: groundingDimension,
           polarity: 'affirms', relationLabel: memory.content, scopeLabel: '', conditionLabel: '' };
         return [
-          ...(extraDimension ? [{ ...support, relationType: 'closeness' }] : []),
           support,
           ...(duplicateSupport ? [{ ...support }] : []),
         ];
@@ -129,22 +128,22 @@ for (const texts of [
   assert.equal(calls.length, 2, 'one evidence call for each independently attributed view');
 });
 
-test('a separate relationship dimension cannot crowd out the fixed support proposition', async t => {
+test('an unrelated relationship dimension cannot establish the fixed support proposition', async t => {
   const f = fixture(t, [['user', 'I value your support and feel close to you.']]);
-  const { generator, calls } = generatorFor({ extraDimension: true });
+  const { generator, calls } = generatorFor({ groundingDimension: 'closeness' });
   const result = await process(f, generator);
-  assert.equal(result.status, 'proposal-pending', JSON.stringify(result));
-  assert.deepEqual(result.evaluation.analyses.relationGrounding.map(item => item.relationType), ['support']);
-  assert.equal(result.evaluation.observations.length, 1);
+  assert.equal(result.status, 'provisional-review');
+  assert.deepEqual(result.evaluation.analyses.relationGrounding, []);
+  assert.equal(f.repository.listReportedStateProposals('melanie').length, 0);
   assert.equal(calls.length, 1);
 });
 
-test('duplicate propositions within the same fixed dimension remain invalid', async t => {
+test('an output exceeding the declared schema leaves the combined analysis pending', async t => {
   const f = fixture(t, [['user', 'I am here for you.']]);
   const { generator } = generatorFor({ duplicateSupport: true });
   const result = await process(f, generator);
   assert.equal(result.status, 'retry-pending');
-  assert.deepEqual(result.evaluation.failedRoles, ['relationGrounding']);
+  assert.deepEqual(result.evaluation.failedRoles, ['relationGrounding', 'perspectiveDirection', 'scopeTime']);
   assert.equal(f.repository.listReportedStateProposals('melanie').length, 0);
 });
 

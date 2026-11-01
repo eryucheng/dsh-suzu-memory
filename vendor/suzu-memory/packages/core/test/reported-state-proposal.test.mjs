@@ -851,7 +851,7 @@ function pendingGoalFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pending-reported-goal-"));
   const databasePath = path.join(root, "memory.db");
   const database = openMemoryDatabase(databasePath);
-  t.after(() => database.close());
+  t.after(() => { database.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const repository = new MemoryRepository(database);
   const canonicalKey = "user:goal:exhibition";
   function propose({ id, action = "create", previous = null, content, time = "2026-08-02T08:00:00.000Z" }) {
@@ -859,7 +859,7 @@ function pendingGoalFixture(t) {
       id, stateFamily: "goal", canonicalKey, sourceContent: content, content, occurredAt: time,
     });
     const draft = ["create", "reinforce", "supersede"].includes(action) ? {
-      ...beliefDraft(observation, { validFrom: time }), kind: "plan", stateFamily: "goal", canonicalKey,
+      ...beliefDraft(observation, { claimText: content, validFrom: time }), kind: "plan", stateFamily: "goal", canonicalKey,
       goalClaim: { text: content },
     } : null;
     return repository.recordReportedStateProposal({
@@ -942,6 +942,10 @@ for (const [language, original, query, cancelled, replacement] of [
     assert.ok(!result.trace.metadata.recalledMemoryIds.includes(current.id));
     const matchedEvent = result.graph.activationField.selected.find(node => node.memoryId === 'matched-event');
     assert.equal(matchedEvent.sourceCount, 1, 'The pending state can be displayed without propagating activation to the event.');
+    const bounded = await retrieveMemories({ databasePath, agentId: 'agent-test', query, anchorMemoryIds: [previous.id],
+      now: new Date('2026-08-05T08:00:00Z'), options: { execution: 'inline', maximumContextChars: 3000, maximumContextMemories: 1 } });
+    assert.deepEqual(bounded.graph.selectedMemoryIds, [current.id], 'The current state owns a one-record budget when following an older state.');
+    assert.ok(bounded.context.includes(current.content));
   });
 }
 
@@ -988,20 +992,26 @@ for (const action of ['cancel', 'supersede']) test('state updates retain source-
     else if (action === 'cancel') assert.match(visible.context, /已取消/u);
     else assert.ok(visible.context.includes(content), visible.context);
   }
-  if (action === 'cancel') {
+  {
     const prototype = Object.getPrototypeOf(database);
     const prepare = prototype.prepare;
-    const reads = [];
+    const reads = [], canonicalReads = [];
     prototype.prepare = function (sql) {
       const statement = prepare.call(this, sql);
+      if (sql.includes('canonical_key = ?') && sql.includes('AND id <> ?')) {
+        return { get: (...args) => { canonicalReads.push({ sql, args }); return statement.get(...args); } };
+      }
       if (!sql.includes('SELECT review_state FROM memory_reported_state_proposals')) return statement;
       return { get: (...args) => { reads.push({ sql, args }); return statement.get(...args); } };
     };
     try { await recall(scope(2)); } finally { prototype.prepare = prepare; }
-    assert.equal(reads.length, 1, 'Closure review is read once despite candidate assembly and both formatting passes.');
-    assert.deepEqual(reads[0].args, ['agent-test', update.id]);
-    const plan = database.prepare('EXPLAIN QUERY PLAN ' + reads[0].sql).all(...reads[0].args);
-    assert.ok(plan.some(row => /SEARCH.*INDEX/u.test(row.detail)), JSON.stringify(plan));
+    assert.equal(canonicalReads.length, 1, 'Each historical state resolves its current state once per search.');
+    assert.equal(reads.length, action === 'cancel' ? 1 : 0);
+    if (reads.length) assert.deepEqual(reads[0].args, ['agent-test', update.id]);
+    for (const read of [...reads, ...canonicalReads]) {
+      const plan = database.prepare('EXPLAIN QUERY PLAN ' + read.sql).all(...read.args);
+      assert.ok(plan.some(row => /SEARCH.*INDEX/u.test(row.detail)), JSON.stringify(plan));
+    }
   }
 });
 
@@ -1110,11 +1120,11 @@ test("an older pending cancellation does not precede a newer accepted replacemen
   materializeReportedStateProposal(repository, { agentId: "agent-test", proposalId: cancellation.id });
   const replacement = propose({ id: "newer-plan", action: "supersede", previous,
     content: "小夏说：已经重新约好了，下周一起看展。", time: "2026-08-04T08:00:00.000Z" });
-  resolveReportedStateProposal(repository, { agentId: "agent-test", proposalId: replacement.id, action: "accept" });
+  const { memory: current } = resolveReportedStateProposal(repository, { agentId: "agent-test", proposalId: replacement.id, action: "accept" });
   const result = await recall([previous.id]);
   assert.match(result.context, /已经重新约好了/);
-  assert.match(result.context, /那次计划取消/);
-  assert.ok(result.context.indexOf("已经重新约好了") < result.context.indexOf("那次计划取消"));
+  assert.ok(result.graph.selectedMemoryIds.includes(current.id));
+  assert.ok(result.graph.selectedMemoryIds.indexOf(current.id) < result.graph.selectedMemoryIds.indexOf(previous.id));
   const dismissed = resolveReportedStateProposal(repository, {
     agentId: "agent-test", proposalId: cancellation.id, action: "dismiss",
   });

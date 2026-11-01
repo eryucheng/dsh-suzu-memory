@@ -21,7 +21,7 @@ export function normalizeGeneratedExtractionRepair(output) {
     ? { ...result, memories: normalizeGeneratedLongTermExtraction({ memories: result.memories }).memories } : result) };
 }
 
-export function parseGeneratedExtractionRepair(output) {
+export function parseGeneratedExtractionRepair(output, context) {
   const parsed = normalizeGeneratedExtractionRepair(output);
   if (!parsed || Array.isArray(parsed) || Object.keys(parsed).join() !== 'results' || !Array.isArray(parsed.results)) {
     throw new Error('Extraction repair must contain only a results array.');
@@ -37,7 +37,7 @@ export function parseGeneratedExtractionRepair(output) {
       throw new Error('Extraction repair result fields do not match its status.');
     }
     if (repaired) {
-      const { memories } = parseGeneratedLongTermExtraction({ memories: result.memories });
+      const { memories } = parseGeneratedLongTermExtraction({ memories: result.memories }, context);
       if (!memories.length) throw new Error('A repaired candidate must contain a memory.');
       return { candidateIndex: result.candidateIndex, status: result.status, memories };
     }

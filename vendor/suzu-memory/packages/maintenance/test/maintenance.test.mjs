@@ -155,6 +155,52 @@ test("immediate lane can index evidence without sending it through semantic main
   database.close();
 });
 
+for (const [status, content] of [['superseded', 'I used to enjoy swimming.'], ['disputed', '这条旧记录的归属仍有争议。']])
+test(`embedding tasks retain searchable historical evidence after status changes: ${status}`, async t => {
+  const { database, repository } = fixture();
+  t.after(() => database.close());
+  seedMemory(repository, 'historical', content);
+  runImmediateMemoryMaintenance({ repository, agentId: AGENT_ID, batchId: 'history', memoryIds: ['historical'],
+    followUpTaskTypes: [MAINTENANCE_TASK_TYPES.memoryEmbedding], planConsolidation: false });
+  database.prepare('UPDATE memory_nodes SET status=? WHERE id=?').run(status, 'historical');
+  const embeddingProvider = Object.assign(async () => ({ model: 'history-test', vector: [1, 0] }), { model: 'history-test', dimensions: 2 });
+  const result = await runEmbeddingMaintenance({ repository, agentId: AGENT_ID, embeddingProvider });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.report.added, 1, 'a completed task must have indexed the still-searchable historical record');
+  assert.ok(repository.listEmbeddings(AGENT_ID, 'history-test', { includeArchived: true })
+    .some(row => row.memory_id === 'historical'));
+});
+
+test('a changed item retries without discarding a completed peer embedding', async t => {
+  const { database, repository } = fixture();
+  t.after(() => database.close());
+  for (const id of ['edited', 'stable']) {
+    seedMemory(repository, id, id + ' 原来的记忆内容。');
+    runImmediateMemoryMaintenance({ repository, agentId: AGENT_ID, batchId: id, memoryIds: [id],
+      followUpTaskTypes: [MAINTENANCE_TASK_TYPES.memoryEmbedding], planConsolidation: false });
+  }
+  const calls = [];
+  const provider = Object.assign(async () => { throw new Error('Use batched embeddings'); }, { model: 'edit-test', dimensions: 2 });
+  provider.embedMany = async texts => {
+    calls.push(texts);
+    if (calls.length === 1) repository.editMemoryManually({ agentId: AGENT_ID, memoryId: 'edited',
+      patch: { content: 'edited 修正后的记忆内容。' }, reason: 'A concurrent correction' });
+    return { model: provider.model, vectors: texts.map(() => [1, 0]) };
+  };
+  const first = await runEmbeddingMaintenance({ repository, agentId: AGENT_ID, embeddingProvider: provider });
+  assert.equal(first.tasksCompleted, 1);
+  assert.equal(first.tasksRetried, 1);
+  assert.equal(first.report.added, 1);
+  assert.equal(first.report.failed, 1);
+  assert.deepEqual(repository.listEmbeddings(AGENT_ID, provider.model).map(row => row.memory_id), ['stable']);
+  const recovered = await runEmbeddingMaintenance({ repository, agentId: AGENT_ID, embeddingProvider: provider });
+  assert.equal(recovered.tasksCompleted, 1);
+  assert.equal(recovered.tasksRetried, 0);
+  assert.equal(calls[1].length, 1, 'the successful peer must not be embedded again');
+  assert.match(calls[1][0], /修正后/);
+  assert.equal(repository.listEmbeddings(AGENT_ID, provider.model).length, 2);
+});
+
 test("embedding lane combines queued memory ids and reuses completed vectors", async () => {
   const { database, repository } = fixture();
   seedMemory(repository, "event-1", "第一件测试事件");

@@ -16,7 +16,7 @@ import {
   processPendingCompanionEvents,
   reviseCompanionEvent,
 } from "../src/index.mjs";
-import { generateCompanionEventBatch } from "../src/processing-stages.mjs";
+import { generateCompanionEventBatch, retryCompanionExtractionRepair } from "../src/processing-stages.mjs";
 import { archiveLongTermEvidence, fallbackStateAnalysisToProvisionalReview, loadLongTermExtractionSystemPrompt } from "@suzu-memory/extraction";
 
 const AGENT_ID = "companion-test";
@@ -82,6 +82,95 @@ function repositoryFixture() {
   const database = openMemoryDatabase(":memory:");
   return { database, repository: new MemoryRepository(database) };
 }
+
+for (const language of ['en', 'zh']) test('repairs only the time-conflicting candidate and revalidates the correction: ' + language, async () => {
+  const source = language === 'en' ? 'This week I applied to adoption agencies.' : '这周我向收养机构提交了申请。';
+  const valid = generatedEventCandidate({ sourceRefs: ['M0002'], content: 'User visited a museum.', eventDate: '', eventStart: '' });
+  const wrong = generatedEventCandidate({ sourceRefs: ['M0001'],
+    content: language === 'en' ? 'In the week before 2023-08-23, User applied to adoption agencies.' : 'User 上周向收养机构提交了申请。',
+    eventDate: '2023-08-23', eventStart: '' });
+  const corrected = { ...wrong, content: language === 'en' ? 'In the week of 2023-08-23, User applied to adoption agencies.' : 'User 本周向收养机构提交了申请。',
+    eventDate: '' };
+  const requests = [];
+  const result = await generateCompanionEventBatch({ identity: IDENTITY, timeZone: 'Asia/Shanghai', events: [
+    event({ occurredAt: '2023-08-23T07:31:00Z', content: { text: source } }),
+    event({ eventId: 'second', occurredAt: '2023-08-23T07:32:00Z', content: { text: 'I visited a museum.' } }),
+  ], generator: async request => {
+    requests.push(request);
+    if (requests.length === 1) return { output: { memories: [wrong, valid] } };
+    const input = JSON.parse(request.input);
+    assert.equal(input.timeZone, 'Asia/Shanghai');
+    assert.deepEqual(input.candidates.map(item => item.candidateIndex), [0]);
+    assert.deepEqual(input.sourceMessages.map(item => item.ref), ['M0001']);
+    assert.match(input.candidates[0].validationError, /Temporal conflict/u);
+    return { output: { results: [{ candidateIndex: 0, status: 'repaired', memories: [requests.length === 2 ? wrong : corrected] }] } };
+  } });
+  assert.equal(requests.length, 3);
+  assert.equal(result.generation.metadata.repairAttempts, 2);
+  assert.equal(result.generation.metadata.unresolvedCandidateCount, 0);
+  assert.deepEqual(result.generation.output.memories.map(item => item.content), [valid.content, corrected.content]);
+});
+
+test('healthy temporal extraction makes no repair API request', async () => {
+  let calls = 0;
+  const memory = generatedEventCandidate({ sourceRefs: ['M0001'], content: 'User completed the design on 2026-08-04.' });
+  const result = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
+    generator: async () => { calls++; return { output: { memories: [memory] } }; } });
+  assert.equal(calls, 1);
+  assert.equal(result.generation.metadata.initialInvalidCandidateCount, 0);
+});
+
+test('unresolved time conflicts keep raw evidence and the configured timezone through an archived review retry', async t => {
+  const f = repositoryFixture();
+  t.after(() => f.database.close());
+  let calls = 0;
+  const wrong = generatedEventCandidate({ sourceRefs: ['M0001'], eventDate: '', eventStart: '',
+    content: 'In the week of 2023-08-21, User applied.' });
+  appendCompanionEvents({ repository: f.repository, agentId: AGENT_ID, identity: IDENTITY,
+    events: event({ occurredAt: '2023-08-21T02:00:00Z', content: { text: 'This week I applied.' } }) });
+  const result = await processPendingCompanionEvents({ repository: f.repository, agentId: AGENT_ID,
+    identity: IDENTITY, timeZone: 'America/Los_Angeles',
+    generator: async () => ({ output: ++calls === 1 ? { memories: [wrong] }
+      : { results: [{ candidateIndex: 0, status: 'repaired', memories: [wrong] }] } }) });
+  assert.equal(calls, 4);
+  assert.equal(result.memoriesStored, 0);
+  assert.equal(result.messagesArchived, 1);
+  const task = f.repository.getMaintenanceTask(AGENT_ID, result.generationDiagnostics.failureReviewTaskId);
+  const pending = task.payload.extractionRepair;
+  assert.equal(pending.timeZone, 'America/Los_Angeles');
+  assert.equal(pending.messages[0].text, 'This week I applied.');
+  assert.equal(pending.candidates[0].candidate.content, wrong.content);
+  const corrected = { ...wrong, content: 'In the week of 2023-08-20, User applied.' };
+  const retried = await retryCompanionExtractionRepair({ repository: f.repository, agentId: AGENT_ID, task,
+    identity: IDENTITY, completedAt: '2026-10-30T02:00:00Z', generator: async request => {
+      assert.equal(JSON.parse(request.input).timeZone, 'America/Los_Angeles');
+      return { output: { results: [{ candidateIndex: 0, status: 'repaired', memories: [corrected] }] } };
+    } });
+  assert.equal(retried.memoriesStored, 1);
+  assert.equal(retried.failureReviewTask, null);
+  assert.equal(f.repository.getMemory(retried.candidateResults[0].memoryId).content, corrected.content);
+  assert.equal(f.repository.listMemories(AGENT_ID, { kinds: ['utterance'] }).items.length, 1);
+});
+
+test('normal archive processing uses the extraction timezone at a week boundary', async t => {
+  const f = repositoryFixture();
+  t.after(() => f.database.close());
+  appendCompanionEvents({ repository: f.repository, agentId: AGENT_ID, identity: IDENTITY,
+    events: event({ occurredAt: '2023-08-21T02:00:00Z', content: { text: 'This week I applied.' } }) });
+  const memory = generatedEventCandidate({ sourceRefs: ['M0001'], eventDate: '', eventStart: '', content: 'In the week of 2023-08-20, User applied.' });
+  let calls = 0;
+  const result = await processPendingCompanionEvents({ repository: f.repository, agentId: AGENT_ID,
+    identity: IDENTITY, timeZone: 'America/Los_Angeles', generator: async () => { calls++; return { output: { memories: [memory] } }; } });
+  assert.equal(calls, 1);
+  assert.equal(result.memoriesStored, 1);
+  assert.equal(result.memoriesForReview, 0);
+});
+
+test('memory overrides use the same source-time validation', async () => {
+  const wrong = generatedEventCandidate({ sourceRefs: ['M0001'], eventDate: '', eventStart: '', content: 'User finished the design yesterday.' });
+  await assert.rejects(generateCompanionEventBatch({ identity: IDENTITY, events: [event()], memoriesOverride: [wrong] }),
+    { code: 'MEMORY_EXTRACTION_TIME_CONFLICT' });
+});
 
 test("normalizes one primary user and one companion while allowing third-party event persons", () => {
   const normalized = normalizeCompanionEvent(event({
@@ -457,10 +546,10 @@ test('recovers an unparseable initial response through the same indexed repair c
 
 test('repairs each invalid candidate against its own family contract and reports complete recovery', async () => {
   const valid = generatedEventCandidate({ sourceRefs: ['M0001'] });
-  const preference = generatedEventCandidate({ sourceRefs: ['M0001'], kind: 'preference', stateFamily: 'preference', stateLabel: '阅读偏好',
-    canonicalKey: 'reading', retentionReason: 'explicit_preference' });
-  const goal = generatedEventCandidate({ sourceRefs: ['M0001'], kind: 'plan', stateFamily: 'goal', stateLabel: '阅读计划',
-    canonicalKey: 'reading-plan', retentionReason: 'open_loop' });
+  const preference = generatedEventCandidate({ kind: 'preference', stateFamily: 'preference', stateLabel: '阅读偏好',
+    canonicalKey: 'reading', retentionReason: 'explicit_preference', sourceRefs: ['M0001'] });
+  const goal = generatedEventCandidate({ kind: 'plan', stateFamily: 'goal', stateLabel: '阅读计划',
+    canonicalKey: 'reading-plan', retentionReason: 'open_loop', sourceRefs: ['M0001'] });
   let calls = 0;
   const generated = await generateCompanionEventBatch({ events: [event()], identity: IDENTITY,
     generator: async request => {
@@ -513,7 +602,7 @@ test('a non-state fact classification error is repaired before asking for a stat
   const corrected = generatedEventCandidate({ title: 'Friend adopted a child',
     content: 'User said a friend adopted a child last year.', subjectRole: 'user', subjectName: 'User',
     actorRoles: [{ role: 'experiencer', actorRole: 'user', actorName: 'User', confidence: 0.9 }],
-    sourceRefs: ['M0001'] });
+    sourceRefs: ['M0001'], eventDate: '', eventStart: '' });
   const invalid = { ...corrected, kind: 'fact' };
   let calls = 0;
   const generated = await generateCompanionEventBatch({ events: [event({

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+export { createMemorySearchSession, MEMORY_SEARCH_TOOL } from './search-session.mjs';
 import path from "node:path";
 import { appendMemoryEventSources } from './event-source-ingestion.mjs';
 import { adoptLegacySourceEvidence, adoptExperienceSourceEvidence } from './legacy-source-import.mjs';

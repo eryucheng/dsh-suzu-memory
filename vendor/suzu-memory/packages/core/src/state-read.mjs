@@ -201,14 +201,27 @@ function stateScopeCompletion(database, primary, eligibleMemoryIds) {
 export function createStateReadView({ repository, agentId, provisionalNodes = [], eligibleMemoryIds = null }) {
   const eligible = eligibleMemoryIds || { has: () => true };
   const allows = node => Boolean(node && node.agent_id === agentId && eligible.has(node.id));
+  const transitions = new Map(provisionalNodes.filter(allows)
+    .filter(node => node.metadata?.reportedStateProposalId)
+    .map(node => [node.metadata.reportedStateProposalId, node]));
   const closure = reportedStateClosureReader(repository.database, agentId, provisionalNodes);
   const closurePhase = node => allows(node) ? closure(node) : '';
+  const currentById = new Map();
   return {
     closurePhase,
     current(primary, options = {}) {
       if (!allows(primary)) return null;
-      const node = resolveCurrentState(repository, primary, { ...options, closurePhase });
-      return allows(node) ? node : null;
+      const key = JSON.stringify([primary.id, Boolean(options.includeClosed)]);
+      if (!currentById.has(key)) {
+        let node;
+        try { node = resolveCurrentState(repository, primary, { ...options, closurePhase }); }
+        catch (error) {
+          if (error.code !== 'EVENT_SOURCE_TASK_DEFERRED') throw error;
+        }
+        const transition = transitions.get((node || primary).metadata?.reportedStateTransitionId);
+        currentById.set(key, allows(transition) ? transition : allows(node) ? node : null);
+      }
+      return currentById.get(key);
     },
     representations(primary) {
       if (!allows(primary)) return null;

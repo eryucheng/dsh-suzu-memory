@@ -1,6 +1,6 @@
 import { LONG_TERM_EXTRACTION_SCHEMA, LONG_TERM_EXTRACTION_REPAIR_SCHEMA,
   parseGeneratedExtractionRepair } from '@suzu-memory/extraction';
-import { assertEventSourceExecutionCurrent } from '@suzu-memory/core';
+import { assertEventSourceExecutionCurrent, DEFAULT_MEMORY_TIME_ZONE } from '@suzu-memory/core';
 
 const MAXIMUM_REPAIR_ATTEMPTS = 3;
 const clean = value => String(value ?? '').trim();
@@ -26,6 +26,7 @@ function repairMessages(state) {
 }
 
 export async function repairExtractionCandidates({ state, generator, sourceMaterial }) {
+  const timeZone = state.timeZone || DEFAULT_MEMORY_TIME_ZONE;
   let pending = state.candidates.map(item => ({ ...item }));
   const repaired = [], rejected = [], failures = [], generations = [];
   let returnedCount = 0, recoveredCount = 0;
@@ -35,7 +36,7 @@ export async function repairExtractionCandidates({ state, generator, sourceMater
     let response;
     try {
       response = await generator({
-        input: JSON.stringify({ candidates: pending.map(item => {
+        input: JSON.stringify({ timeZone, candidates: pending.map(item => {
           const branch = LONG_TERM_EXTRACTION_SCHEMA.properties.memories.items.anyOf
             .find(schema => schema.properties.stateFamily.enum.includes(item.candidate?.stateFamily));
           return { candidateIndex: item.index, candidate: item.candidate,
@@ -77,7 +78,7 @@ export async function repairExtractionCandidates({ state, generator, sourceMater
         }
         try {
           if (counts.get(item.index) !== 1) throw new Error('Duplicate candidateIndex in repair response.');
-          const parsed = parseGeneratedExtractionRepair({ results: [result] }).results[0];
+          const parsed = parseGeneratedExtractionRepair({ results: [result] }, { messages, timeZone }).results[0];
           if (parsed.status === 'pending') throw new Error(parsed.reason);
           if (parsed.status === 'repaired') {
             const refs = new Set(messages.map(message => message.memoryRef));
@@ -114,5 +115,5 @@ export async function repairExtractionCandidates({ state, generator, sourceMater
   return { memories: repaired, recoveredCount,
     rejected, failures, returnedCount, generations,
     state: pending.length ? { candidates: pending, messages: repairMessages({ ...state, candidates: pending }),
-      participants: state.participants } : null };
+      participants: state.participants, timeZone } : null };
 }

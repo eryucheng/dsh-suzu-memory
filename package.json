@@ -1,6 +1,6 @@
 {
   "name": "dsh-suzu-memory",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Suzu Memory integration for DeepSeek Harness sessions",
   "type": "module",
   "license": "Apache-2.0",

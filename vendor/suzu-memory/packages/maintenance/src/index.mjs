@@ -618,7 +618,7 @@ async function processStructureTasks({ repository, agentId, tasks, batch,
           .map(proposal => proposal.result_memory_id));
         const queued = provisionalMemoryIds.length ? runImmediateMemoryMaintenance({
           repository, agentId, batchId: `pending-structure:${part.id}`, memoryIds: provisionalMemoryIds,
-          followUpTaskTypes: [MAINTENANCE_TASK_TYPES.memoryEmbedding], planConsolidation: false,
+          followUpTaskTypes: [], planConsolidation: false,
         }) : { queued: [], warnings: [] };
         return { ...structureTaskResult(report), queued: queued.queued, maintenanceWarnings: queued.warnings };
       },

@@ -1,6 +1,7 @@
 export { MAINTENANCE_LANES, MAINTENANCE_TASK_TYPES, memoryMaintenanceTaskPayload, enqueueMemoryMaintenanceTasks } from './maintenance-tasks.mjs';
 export { createStateReadView, isProvisionalMemory, isStructuredStateMemory, STATE_REPRESENTATION_LAYERS } from './state-read.mjs';
 export { DEFAULT_MEMORY_TIME_ZONE, dateKeyInTimeZone, timestampInTimeZone, sourceCalendarTimeKnown, modelCalendarFields } from './calendar-time.mjs';
+export { resolveCalendarExpression, CALENDAR_DATE_EXCLUSION, addCalendarDays } from './calendar-expression.mjs';
 export { EVENT_SOURCE_VERSION, EVENT_SOURCE_PROTOCOL_VERSION, eventSourceError, sourceSnapshot, sourceHash,
   normalizeEventSource, normalizeEventSourceScope, eventSourceEligible, eventSourceOf } from './event-source-contract.mjs';
 export { assertEventSourceScope, observeEventSourceScope, eventSourceState, recordEventSourceConsumption,

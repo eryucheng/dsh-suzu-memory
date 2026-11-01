@@ -58,7 +58,7 @@ function timestampLabel(timestamp, timeZone) {
 }
 
 function formatUtterance(node, options) {
-  const speaker = node.metadata?.speaker
+  const speaker = node.metadata?.speaker || options.actorNames?.get(node.subject_key)
     || (node.subject_role === "agent" ? "我" : "对方");
   const time = node.metadata?.sourceTimeKnown === false ? "时间未知" : timestampLabel(node.event_start || node.recorded_at, options.timeZone);
   return `[${time}] ${speaker}：${boundedText(node.content, options.maximumMessageChars)}`;
@@ -172,6 +172,7 @@ export function formatPrimary(primary, evidence, options, {
     : primary.kind === "topic" ? "主题" : "我记得";
   const closed = options.closureLabel?.(primary);
   const primarySection = [
+    options.actorNames?.get(primary.subject_key) ? `人物：${options.actorNames.get(primary.subject_key)}` : '',
     evidenceNatureLine(primary, options),
     closed ? `状态：${closed}；结束时间：${timestampLabel(primary.valid_to, options.timeZone)}` : "",
     `[${time}] ${label}：${boundedText(primary.content, Math.floor(options.maximumContextChars * (evidence.length ? 0.34 : 0.62)))}`,
@@ -188,256 +189,27 @@ export function formatPrimary(primary, evidence, options, {
   return joinBoundedSections(sections, options.maximumContextChars);
 }
 
-function formatMemoryChain(nodes, options, evidence = []) {
-  const nodeIds = new Set(nodes.map(node => node.id));
-  const additionalEvidence = evidence.filter(node => !nodeIds.has(node.id));
-  return joinBoundedSections(
-    [
-      ...nodes.map((node) => formatPrimary(node, [], options)),
-      ...additionalEvidence.map((node, index) => [
-        index === 0 ? "相关原话：" : "", formatEvidenceMemory(node, options),
-      ].filter(Boolean).join("\n")),
-    ],
-    options.maximumContextChars,
-  );
-}
-
-function formatCausalChain(primary, nodes, options, direction = "backward") {
-  const related = nodes.filter((node) => node.id !== primary.id);
-  if (!related.length) return formatPrimary(primary, [], options);
-  const limit = Math.max(80, Math.floor(options.maximumContextChars / (related.length + 1)));
-  const time = (node) => node.metadata?.sourceTimeKnown === false ? "时间未知" : node.event_date
-    || timestampLabel(node.event_start || node.recorded_at, options.timeZone);
-  if (direction === "forward") {
-    return joinBoundedSections([
-      [
-        evidenceNatureLine(primary, options),
-        `[${time(primary)}] 原因：${boundedText(primary.content, limit)}`,
-      ].filter(Boolean).join("\n"),
-      ...related.map((node) => [
-        evidenceNatureLine(node, options),
-        `[${time(node)}] 有明确关系的后续结果：${boundedText(node.content, limit)}`,
-      ].filter(Boolean).join("\n")),
-    ], options.maximumContextChars);
+export function renderRecallOutput({ nodes }, options) {
+  const maximum = Math.max(1, Math.trunc(Number(options.maximumContextChars) || 1));
+  if (!nodes.length) return { text: '', context: '', records: [], outputBudget: {
+    maximumContextChars: maximum, requiredTextChars: 0, finalTextChars: 0, sectionTruncationApplied: false } };
+  const prefix = options.heading + '\n' + options.guidance + '\n\n';
+  const available = Math.max(0, maximum - prefix.length);
+  const sections = nodes.map(node => ({ memoryId: node.id, kind: node.kind,
+    text: '记忆编号：' + node.id + '\n' + formatPrimary(node, [], { ...options, maximumContextChars: 1_000_000 }) }));
+  const required = sections.map(record => record.text).join('\n\n').length;
+  const minimum = sections.map(record => ('记忆编号：' + record.memoryId + '\n').length + 1);
+  let included = sections.length;
+  while (included && minimum.slice(0, included).reduce((sum, size) => sum + size, 0) + (included - 1) * 2 > available) included--;
+  const records = sections.slice(0, included);
+  const reserve = records.reduce((sum, record) => sum + ('记忆编号：' + record.memoryId + '\n').length, 0);
+  const each = records.length ? Math.floor((available - reserve - Math.max(0, records.length - 1) * 2) / records.length) : 0;
+  for (const record of records) {
+    const label = '记忆编号：' + record.memoryId + '\n';
+    record.text = label + boundedText(record.text.slice(label.length), each);
   }
-  return joinBoundedSections([
-    [
-      evidenceNatureLine(primary, options),
-      `[${time(primary)}] 结果：${boundedText(primary.content, limit)}`,
-    ].filter(Boolean).join("\n"),
-    ...related.map((node) => [
-      evidenceNatureLine(node, options),
-      `[${time(node)}] 有明确关系的原因：${boundedText(node.content, limit)}`,
-    ].filter(Boolean).join("\n")),
-  ], options.maximumContextChars);
-}
-
-function stateScopeSections(completion, options) {
-  const [primary, ...related] = completion.nodes;
-  const limit = Math.max(80, Math.floor(options.maximumContextChars / (related.length + 1)));
-  if (completion.mode === "exception-with-root") {
-    return [
-      [
-        evidenceNatureLine(primary, options),
-        `局部例外：${boundedText(primary.content, limit)}`,
-      ].filter(Boolean).join("\n"),
-      `它所限定的宽泛状态：${boundedText(related[0].content, limit)}`,
-    ].filter(Boolean);
-  }
-  return [
-    [
-      evidenceNatureLine(primary, options),
-      `宽泛状态：${boundedText(primary.content, limit)}`,
-    ].filter(Boolean).join("\n"),
-    ...related.map((node) => `局部例外：${boundedText(node.content, limit)}`),
-  ].filter(Boolean);
-}
-
-function formatStateScopeCompletion(completion, options) {
-  return joinBoundedSections(
-    stateScopeSections(completion, options),
-    options.maximumContextChars,
-  );
-}
-
-function stateCompletionSections(current, historical, options) {
-  return [
-    [
-      evidenceNatureLine(current, options),
-      `当前状态：${boundedText(current.content, Math.floor(options.maximumContextChars * 0.46))}`,
-    ].filter(Boolean).join("\n"),
-    `过去的状态（已被后续更新）：${boundedText(historical.content, Math.floor(options.maximumContextChars * 0.38))}`,
-  ].filter(Boolean);
-}
-
-function formatStateCompletion(current, historical, options) {
-  return joinBoundedSections(
-    stateCompletionSections(current, historical, options),
-    options.maximumContextChars,
-  );
-}
-
-function evidenceHeadingForIntent(intent) {
-  if (intent === "counterevidence") return "相反依据：";
-  if (intent === "evidence") return "直接依据：";
-  return "相关原话：";
-}
-
-function missingEvidenceForIntent(intent) {
-  if (intent === "counterevidence") {
-    return "未找到与这条记忆直接关联的相反依据。";
-  }
-  if (intent === "evidence") {
-    return "未找到与这条记忆直接关联的支持依据。";
-  }
-  return "未找到与这条记忆直接关联的原话证据。";
-}
-
-function formatEvidenceDisclosure({
-  primary,
-  evidence,
-  intent,
-  stateCompletion,
-  scopeCompletion,
-  options,
-}) {
-  if (!stateCompletion && !scopeCompletion) {
-    return formatPrimary(primary, evidence, options, {
-      evidenceRequested: true,
-      evidenceHeading: evidenceHeadingForIntent(intent),
-      missingEvidenceText: missingEvidenceForIntent(intent),
-    });
-  }
-  const stateSections = stateCompletion
-    ? stateCompletionSections(stateCompletion, primary, options)
-    : stateScopeSections(scopeCompletion, options);
-  if (!evidence.length) {
-    return joinBoundedSections([
-      ...stateSections,
-      missingEvidenceForIntent(intent),
-    ], options.maximumContextChars);
-  }
-  const evidenceHeading = evidenceHeadingForIntent(intent);
-  return joinBoundedSections([
-    ...stateSections,
-    ...evidence.map((node, index) => [
-      index === 0 ? evidenceHeading : "",
-      formatEvidenceMemory(node, options),
-    ].filter(Boolean).join("\n")),
-  ], options.maximumContextChars);
-}
-
-function formatEvidenceReview({
-  primary,
-  supportEvidence,
-  counterEvidence,
-  stateCompletion,
-  scopeCompletion,
-  options,
-}) {
-  const sections = stateCompletion
-    ? stateCompletionSections(stateCompletion, primary, options)
-    : scopeCompletion
-      ? stateScopeSections(scopeCompletion, options)
-      : [formatPrimary(primary, [], options)];
-  sections.push(supportEvidence.length
-    ? ["最强直接依据：", formatEvidenceMemory(supportEvidence[0], options)].join("\n")
-    : "未找到与这条记忆直接关联的支持依据。");
-  sections.push(counterEvidence.length
-    ? ["最强相反依据：", formatEvidenceMemory(counterEvidence[0], options)].join("\n")
-    : "未找到与这条记忆直接关联的相反依据。");
-  return joinBoundedSections(sections, options.maximumContextChars);
-}
-
-export function formatRecallText({
-  intent,
-  primary,
-  evidence,
-  supportEvidence,
-  counterEvidence,
-  stateCompletion,
-  scopeCompletion,
-  chain,
-  lifecycleClosure,
-  rawStateFallback,
-  pendingStateChanges = [],
-  options,
-}) {
-  if (pendingStateChanges.length) {
-    const actionLabels = { create: "新增", reinforce: "再次确认", progress_update: "进展更新",
-      supersede: "已变更", narrow_scope: "适用范围已调整", add_scoped_exception: "新增例外",
-      pause: "已暂停", resume: "已恢复", complete: "已完成", cancel: "已取消", end: "已结束",
-      retire: "不再适用", interrupt: "已中断", stop: "已停止", revoke: "已撤回",
-      correct_attribution: "归属已更正" };
-    // Review status does not outrank time: newer accepted states also take precedence.
-    const ordered = [...chain.nodes].sort((left, right) =>
-      String(right.known_at || right.recorded_at).localeCompare(String(left.known_at || left.recorded_at)));
-    const sections = ordered.map(node => {
-      const time = node.metadata?.sourceTimeKnown === false ? "时间未知" : timestampLabel(node.known_at || node.recorded_at, options.timeZone);
-      if (!node.metadata?.reportedStateProposalId || !isProvisionalNode(node)) {
-        const closed = options.closureLabel?.(node);
-        return `[${time}] 记录${closed ? `（${closed}）` : ""}：${node.content}`;
-      }
-      const label = options.closureLabel?.(node) || actionLabels[node.metadata.reportedStateAction] || "更新";
-      return `[${time}] ${node.title || "状态"}（${label}）：${node.content}`;
-    });
-    if (["evidence", "counterevidence", "evidence-review", "utterance"].includes(intent)) {
-      sections.push(...evidence.map(node => formatEvidenceMemory(node, options)));
-    }
-    return joinBoundedSections(sections, options.maximumContextChars);
-  }
-  const recallText = intent === "evidence-review"
-    ? formatEvidenceReview({
-      primary,
-      supportEvidence,
-      counterEvidence,
-      stateCompletion,
-      scopeCompletion,
-      options,
-    })
-    : ["evidence", "counterevidence", "utterance"].includes(intent)
-    ? formatEvidenceDisclosure({
-      primary,
-      evidence,
-      intent,
-      stateCompletion,
-      scopeCompletion,
-      options,
-    })
-    : stateCompletion
-    ? formatStateCompletion(stateCompletion, primary, options)
-    : scopeCompletion
-    ? formatStateScopeCompletion(scopeCompletion, options)
-    : chain.mode === "causal" && chain.nodes.length > 1
-    ? formatCausalChain(primary, chain.nodes, options, chain.direction)
-    : chain.nodes.length > 1
-    ? formatMemoryChain(chain.nodes, options, evidence)
-    : formatPrimary(primary, evidence, options);
-  const stateBoundary = rawStateFallback
-    ? "记忆边界：以下是主体当时的原始陈述；可以据此复述其明确说法，但它尚未经过状态整理，不能自行扩大或更新为更强的稳定结论。"
-    : "";
-  if (!lifecycleClosure?.boundaryRequired) {
-    return stateBoundary
-      ? joinBoundedSections([stateBoundary, recallText], options.maximumContextChars)
-      : recallText;
-  }
-  const boundary = lifecycleClosure.status === "pending"
-    ? "记忆边界：最后已知进度仍在等待处理，没有后续闭环记忆；不能据此断言后来已经完成或取消。"
-    : "记忆边界：这里只记得相关过程，没有明确的完成、取消或失败结局；不要猜测后来结果。";
-  return joinBoundedSections(
-    [stateBoundary, boundary, recallText].filter(Boolean),
-    options.maximumContextChars,
-  );
-}
-
-export function renderRecallOutput(input, options) {
-  const available = Math.max(1, Number(options.maximumContextChars) - options.heading.length - options.guidance.length - 4);
-  const formatOptions = { ...options, maximumContextChars: available };
-  const requiredText = formatRecallText({ ...input, options: { ...formatOptions, maximumContextChars: 1_000_000 } });
-  const budgeted = formatRecallText({ ...input, options: formatOptions });
-  const text = boundedText(budgeted, available);
-  return { text, context: options.heading + '\n' + options.guidance + '\n\n' + text, formatOptions,
-    outputBudget: { maximumContextChars: Number(options.maximumContextChars), availableTextChars: available,
-      requiredTextChars: requiredText.length, budgetedTextChars: budgeted.length, finalTextChars: text.length,
-      sectionTruncationApplied: requiredText.length > budgeted.length, safetyTruncationApplied: budgeted.length > available } };
+  const text = records.map(record => record.text).join('\n\n');
+  return { text, records, context: text ? prefix + text : '', outputBudget: {
+    maximumContextChars: maximum, availableTextChars: available, requiredTextChars: required,
+    budgetedTextChars: text.length, finalTextChars: text.length, sectionTruncationApplied: required > text.length, safetyTruncationApplied: false } };
 }

@@ -17,6 +17,7 @@ import {
   timestampInTimeZone,
 } from "@suzu-memory/core";
 import { buildExtractionParticipants } from './participant-identity.mjs';
+import { createExtractionTimeValidator } from './temporal-evidence.mjs';
 
 export const RETENTION_REASONS = Object.freeze([
   "identity",
@@ -463,6 +464,7 @@ export function buildLongTermExtractionInput({
       (window) => window.continuationGuidanceMessages,
     ),
     participants,
+    timeZone,
   };
 }
 
@@ -494,7 +496,7 @@ export function normalizeGeneratedLongTermExtraction(value) {
   }) };
 }
 
-export function parseGeneratedLongTermExtraction(value) {
+export function parseGeneratedLongTermExtraction(value, { messages, timeZone } = {}) {
   let parsed = value;
   if (typeof value === "string") {
     try {
@@ -512,6 +514,7 @@ export function parseGeneratedLongTermExtraction(value) {
   }
   if (!Array.isArray(parsed.memories)) throw new Error("memories 必须是数组。");
   parsed = normalizeGeneratedLongTermExtraction(parsed);
+  const validateTime = messages ? createExtractionTimeValidator(messages, timeZone) : null;
   const allowedKinds = new Set(LONG_TERM_EXTRACTION_SCHEMA.properties.memories.items.properties.kind.enum);
   const allowedRoles = new Set(LONG_TERM_EXTRACTION_SCHEMA.properties.memories.items.properties.subjectRole.enum);
   const allowedReality = new Set(LONG_TERM_EXTRACTION_SCHEMA.properties.memories.items.properties.reality.enum);
@@ -656,7 +659,7 @@ export function parseGeneratedLongTermExtraction(value) {
         throw new Error(`memories[${index}].${field} 必须在 0 到 1 之间。`);
       }
     }
-    return {
+    const memory = {
       ...candidate,
       title: clean(candidate.title),
       content: clean(candidate.content),
@@ -673,6 +676,8 @@ export function parseGeneratedLongTermExtraction(value) {
       confidence: Number(candidate.confidence),
       importance: Number(candidate.importance),
     };
+    validateTime?.(memory);
+    return memory;
   });
   return {
     memories,
