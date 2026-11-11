@@ -8,7 +8,7 @@
 <p align="center">
   <a href="#记忆效果"><img src="https://img.shields.io/badge/LoCoMo-89.87%25-9365cb" alt="LoCoMo 准确率 89.87%"></a>
   <a href="https://github.com/eryucheng/dsh-suzu-memory/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/eryucheng/dsh-suzu-memory/ci.yml?branch=main&amp;label=CI&amp;logo=github" alt="CI 构建状态"></a>
-  <a href="https://github.com/eryucheng/dsh-suzu-memory/releases/latest"><img src="https://img.shields.io/badge/release-v0.7.0-9365cb" alt="版本 0.7.0"></a>
+  <a href="https://github.com/eryucheng/dsh-suzu-memory/releases/latest"><img src="https://img.shields.io/badge/release-v0.8.0-9365cb" alt="版本 0.8.0"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-0.2.1--rc.3-4d6bfe" alt="适配 DSH 0.2.1-rc.3"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-22.19%2B%20%7C%2024%2B-5fa04e?logo=nodedotjs&amp;logoColor=white" alt="Node.js 22.19+ 或 24+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-777bc4" alt="Apache License 2.0"></a>
@@ -163,7 +163,7 @@
 
 | 项目 | 版本 |
 | --- | --- |
-| 插件 | `0.7.0` |
+| 插件 | `0.8.0` |
 | DeepSeek Harness | `>=0.2.1-rc.2 <0.3.0-0` |
 | 开发与测试使用 | `0.2.1-rc.3` |
 | Node.js | `^22.19.0` 或 `>=24.0.0` |
@@ -172,11 +172,11 @@
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/eryucheng/dsh-suzu-memory/releases/latest) 下载 `dsh-suzu-memory-0.7.0.tgz`，**保持 `.tgz` 格式，不要解压**。
+1. 从 [Releases](https://github.com/eryucheng/dsh-suzu-memory/releases/latest) 下载 `dsh-suzu-memory-0.8.0.tgz`，**保持 `.tgz` 格式，不要解压**。
 2. 打开 DSH 的「插件」页面，选择「添加插件 → 安装第三方插件」。
 3. 在「包名或地址」中填入安装包的**绝对路径**（不加引号），例如：
    ```text
-   D:/Downloads/dsh-suzu-memory-0.7.0.tgz
+   D:/Downloads/dsh-suzu-memory-0.8.0.tgz
    ```
 4. 按提示完成安装，确认 `dsh-suzu-memory` 已启用。如果 DSH 提示需要重启，就重启一次。
 5. 打开「设置 → Suzu Memory」，在顶部选择需要使用记忆的会话，勾选「启用此会话的 Suzu Memory」。**每个会话默认关闭，需要分别手动开启。**
@@ -197,7 +197,7 @@ Web 部署时，填写的路径必须是 **DSH 服务所在机器**上的文件�
 也可以用命令行安装到 Web profile：
 
 ```powershell
-dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.7.0.tgz"
+dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.8.0.tgz"
 ```
 
 桌面版建议用插件页面安装。如果要用命令行管理桌面版插件，需要使用桌面版安装目录下 `resources/runtime/cli/bin/` 中自带的 `dsh`（Windows 上是 `dsh.cmd`），用法见 [DSH 桌面版命令行说明](https://github.com/deepseek-ai/deepseek-harness/blob/1f81c047fc48fa190a683e469daa699857e9afe8/apps/desktop/README.md#bundled-command-runtime)。通过 npm 安装的 `dsh` 管理不了桌面版的 profile。
@@ -448,7 +448,7 @@ New-Item -ItemType Directory -Force ./dist
 npm pack --pack-destination ./dist
 ```
 
-执行后会生成 `dist/dsh-suzu-memory-0.7.0.tgz`，按[快速开始](#快速开始)安装即可。测试包含 DSH 官方运行时的集成测试，使用受控的模型适配器，不需要真实的 API Key。
+执行后会生成 `dist/dsh-suzu-memory-0.8.0.tgz`，按[快速开始](#快速开始)安装即可。测试包含 DSH 官方运行时的集成测试，使用受控的模型适配器，不需要真实的 API Key。
 
 ```text
 dsh-suzu-memory/
