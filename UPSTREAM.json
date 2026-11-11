@@ -1,7 +1,7 @@
 {
   "memory": {
     "repository": "https://github.com/eryucheng/suzu-memory",
-    "commit": "645c862470b1a207c9904e614083f8b77a8f15bf",
+    "commit": "c7dbc8c97de7246f6be12d2a9b37c16133985663",
     "directory": "vendor/suzu-memory",
     "license": "Apache-2.0"
   },

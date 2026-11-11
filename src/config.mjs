@@ -3,9 +3,10 @@ import os from 'node:os';
 import z from '@deepseek-ai/schemastery';
 import { DEFAULT_LENGTH_ARCHIVE_POLICY } from '@suzu-memory/ingestion';
 import { DEFAULT_GENERATION_MAX_OUTPUT_TOKENS } from '@suzu-memory/providers';
+import { DEFAULT_RETRIEVAL_OPTIONS } from '@suzu-memory/retriever';
 import { liveValue, validateSchedule } from './schedule.mjs';
 
-const LIVE_KEYS = ['enabled', 'automaticMaintenance', 'offPeakOnly', 'offPeakSchedule', 'batchedCompaction', 'compactionBatchCharacters', 'compactionConcurrency'];
+const LIVE_KEYS = ['enabled', 'automaticMaintenance', 'offPeakOnly', 'offPeakSchedule', 'batchedCompaction', 'compactionBatchCharacters', 'compactionConcurrency', 'dailyRequestLimit'];
 
 export const Config = z.object({
   enabled: z.boolean().default(true).volatile().description('启用 Suzu Memory；关闭后停止采集、召回、整理及提示词替换，保留已有数据。'),
@@ -18,6 +19,8 @@ export const Config = z.object({
   analysisTimeoutMs: z.number().step(1).min(1000).max(600000).default(180000),
   analysisMaxTokens: z.number().step(1).min(256).max(64000).default(DEFAULT_GENERATION_MAX_OUTPUT_TOKENS),
   maximumOutputCharacters: z.number().step(1).min(1024).max(2000000).default(262144),
+  dailyRequestLimit: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(0).volatile()
+    .description('本配置下各会话每天共用的记忆模型调用次数上限，含分析和向量调用；0 为不限。失败调用也计入，按记忆时区跨日恢复，不限制 DSH 聊天与压缩。'),
   automaticMaintenance: z.boolean().default(true).volatile().description('累计内容达到批次长度后在后台整理，压缩时处理剩余内容。'),
   offPeakOnly: z.boolean().default(false).volatile().description('自动整理仅在配置的波谷时段运行；立即整理不受时段限制。'),
   offPeakSchedule: z.object({
@@ -44,7 +47,7 @@ export const Config = z.object({
   maximumConsolidationRuns: z.number().step(1).min(1).max(20).default(3),
   historyBatchSize: z.number().step(1).min(1).max(1000).default(128),
   recallLimit: z.number().step(1).min(1).max(10).default(5),
-  recallMaximumCharacters: z.number().step(1).min(1000).max(48000).default(12000),
+  recallMaximumCharacters: z.number().step(1).min(1000).max(48000).default(DEFAULT_RETRIEVAL_OPTIONS.maximumContextChars),
   consoleEnabled: z.boolean().default(true),
   embedding: z.union([z.const(null), z.object({
     enabled: z.boolean().default(true),

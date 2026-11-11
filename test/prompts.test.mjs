@@ -18,7 +18,7 @@ import { host, config, textChunks, temporary } from './helpers.mjs';
 const preferences = (extra = {}) => ({ memoryEnabled: true, personaMode: 'dsh', persona: '', compactionMode: 'dsh', compactionPrompt: '', ...extra });
 
 test('existing prompt files without an opt-in remain disabled and retain their persona', async t => {
-  const {ctx}=await host(t);const store=new SessionSettings(ctx,temporary(t));
+  const {ctx}=await host(t);const store=new SessionSettings(ctx,temporary());
   fs.mkdirSync(store.directory,{recursive:true});
   const {memoryEnabled,...legacy}=preferences({personaMode:'custom',persona:'Original saved persona'});
   const text=JSON.stringify({version:1,revision:1,sessionId:'legacy',...legacy});
@@ -29,7 +29,7 @@ test('existing prompt files without an opt-in remain disabled and retain their p
 
 test('prompt preferences persist independently and concurrent stale saves cannot overwrite a newer edit', async t => {
   const { ctx } = await host(t);
-  const store = new SessionSettings(ctx, temporary(t));
+  const store = new SessionSettings(ctx, temporary());
   assert.equal(store.read('../one').revision, 0);
   const results = await Promise.all([
     store.save('../one', preferences({ personaMode: 'custom', persona: '你是铃。' }), 0),
@@ -52,7 +52,7 @@ test('prompt preferences persist independently and concurrent stale saves cannot
 test('unload cancels a pending prompt writer and drains its acquisition before returning', async t => {
   const { ctx } = await host(t);
   let store;
-  const fiber = ctx.plugin({ apply(child) { store = new SessionSettings(child, temporary(t)); } });
+  const fiber = ctx.plugin({ apply(child) { store = new SessionSettings(child, temporary()); } });
   await fiber;
   fs.mkdirSync(store.directory, { recursive: true });
   const locked = Promise.withResolvers();
@@ -74,7 +74,7 @@ async function loopHost(t, script, overrides = {}) {
   await result.ctx.plugin(AgentRegistry);
   await result.ctx.plugin(AgentLoop, { agents: [] });
   await result.ctx.plugin(TokenMeter);
-  const fiber = result.ctx.plugin(plugin, config(t, overrides));
+  const fiber = result.ctx.plugin(plugin, config(overrides));
   await fiber;
   const create = id => result.ctx.agentLoop.createAgent(result.ctx, { sessionId: SessionId(id),
     agentOptions: { provider: 'test', model: 'deepseek-test' } });
@@ -115,7 +115,7 @@ test('saved persona replaces native persona slots only in its conversation and u
 
 test('DSH retains the authority of a separately configured complete system prompt', async t => {
   const { ctx } = await host(t);
-  const store = new SessionSettings(ctx, temporary(t));
+  const store = new SessionSettings(ctx, temporary());
   await store.save('complete', preferences({ personaMode: 'custom', persona: '会话人设' }), 0);
   ctx.systemPrompt.section({ name: 'complete-fixture', order: 0, text: '预设的完整系统提示词', complete: true });
   const assembly = await ctx.systemPrompt.assemble({ agent: { session: { id: 'complete' } } });

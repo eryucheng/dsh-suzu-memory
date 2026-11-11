@@ -2,7 +2,7 @@ import { Service } from '@deepseek-ai/cordis';
 import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt';
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { readFileSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readdir, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { sessionMemoryId } from './events.mjs';
 
@@ -49,6 +49,7 @@ export class SessionSettings extends Service {
     this.profileEnabled = profileEnabled;
     this.lifetime = new AbortController();
     this.pending = new Set();
+    this.removing = new Set();
     ctx.effect(() => async () => {
       this.lifetime.abort(new Error('会话提示词服务已关闭。'));
       await Promise.allSettled([...this.pending]);
@@ -116,10 +117,41 @@ export class SessionSettings extends Service {
   }
 
   write(sessionId, change, revision, signal) {
+    if (this.removing.has(sessionMemoryId(sessionId))) return Promise.reject(new Error('此会话的记忆正在删除。'));
     const combined = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
     const task = this.persist(sessionId, change, revision, combined);
     this.pending.add(task);
     return task.finally(() => this.pending.delete(task));
+  }
+
+  async storedSessions() {
+    let names;
+    try { names = await readdir(this.directory); }
+    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+    const result = [];
+    for (const name of names.filter(name => /^dsh-[a-f0-9]{64}\.json$/u.test(name))) {
+      let value;
+      try { value = JSON.parse(await readFile(path.join(this.directory, name), 'utf8')); }
+      catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) continue; throw error; }
+      // A damaged identity record must not hide the stored library from cleanup.
+      if (!value || typeof value.sessionId !== 'string' || `${sessionMemoryId(value.sessionId)}.json` !== name) continue;
+      result.push({ id: value.sessionId, libraryId: sessionMemoryId(value.sessionId) });
+    }
+    return result;
+  }
+
+  async removeLibrary(libraryId) {
+    if (!/^dsh-[a-f0-9]{64}$/u.test(libraryId)) throw new Error('无效的记忆库。');
+    this.removing.add(libraryId);
+    try {
+      await Promise.allSettled([...this.pending]);
+      const filename = path.join(this.directory, libraryId + '.json');
+      await mkdir(this.directory, { recursive: true });
+      await withFileLock(filename, async () => {
+        await unlink(filename).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        for (const id of this.cache.keys()) if (sessionMemoryId(id) === libraryId) { this.cache.delete(id); this.nativeCompaction.delete(id); }
+      }, { signal: this.lifetime.signal, waitMs: 10000 });
+    } finally { this.removing.delete(libraryId); }
   }
 
   async persist(sessionId, change, revision, signal) {

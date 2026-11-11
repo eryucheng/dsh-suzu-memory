@@ -1,4 +1,8 @@
 @import "/memory/base.css";
+.library-actions { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 32px; color: var(--muted); font-size: 12px; }
+.library-actions button { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--muted); padding: 8px 12px; cursor: pointer; }
+.library-actions button:disabled { opacity: .45; cursor: default; }
+.library-actions button:not(:disabled):hover { color: #f28f96; border-color: #f28f96; }
 body > header {
   height: 90px;
   padding: 0 36px;

@@ -1,18 +1,16 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import net from 'node:net';
 import test from 'node:test';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { DshMemoryRuntime } from '../src/runtime.mjs';
 import { resolveConfig } from '../src/config.mjs';
-import { sourceScope } from '../src/events.mjs';
-import { host, config, session, user, assistant, textChunks, eventCandidate } from './helpers.mjs';
+import { sourceScope, sessionMemoryId } from '../src/events.mjs';
+import { host, config, session, user, assistant, textChunks, eventCandidate, consoleClient } from './helpers.mjs';
 
 test('memory uses the configured timezone and follows the system when it is omitted', async t => {
   const { ctx } = await host(t);
   for (const timeZone of ['', 'America/Los_Angeles']) {
-    const runtime = new DshMemoryRuntime(ctx, config(t, { timeZone }), () => true);
+    const runtime = new DshMemoryRuntime(ctx, config({ timeZone }), () => true);
     try {
       const entry = runtime.require(session());
       assert.equal(entry.memory.defaults.retrieval.timeZone, timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -23,7 +21,7 @@ test('memory uses the configured timezone and follows the system when it is omit
 
 test('committed conversation text keeps host identities and excludes injected context and failed attempts', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
+  const runtime = new DshMemoryRuntime(ctx, config(), () => true);
   t.after(() => runtime.close());
   const value = session();
   user(value, '今天去了灯塔博物馆。');
@@ -41,7 +39,7 @@ test('committed conversation text keeps host identities and excludes injected co
 
 test('resume consumes only the missing suffix and repeated notifications read no history', async t => {
   const { ctx } = await host(t);
-  const options = config(t, { historyBatchSize: 2 });
+  const options = config({ historyBatchSize: 2 });
   let runtime = new DshMemoryRuntime(ctx, options, () => true);
   const value = session();
   user(value, '第一条'); assistant(value, '回复一');
@@ -64,7 +62,7 @@ test('resume consumes only the missing suffix and repeated notifications read no
 
 test('a new message after a large history reads only its new log range', async t => {
   const { ctx } = await host(t);
-  const options = config(t);
+  const options = config();
   const runtime = new DshMemoryRuntime(ctx, options, () => true);
   t.after(() => runtime.close());
   const value = session();
@@ -79,13 +77,11 @@ test('a new message after a large history reads only its new log range', async t
   user(value, '一条新增消息', 1001);
   runtime.consume(value);
   assert.deepEqual(ranges, [[upper, upper + 2]]);
-  fs.writeFileSync(path.join(options.dataRoot, 'read-evidence.json'), JSON.stringify({ historyMessages: 1000,
-    unchangedReads: 0, incrementalReads: ranges, readEvents: 2, pid: process.pid }));
 });
 
 test('an interrupted acknowledgement can replay the same committed input without duplicates', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
+  const runtime = new DshMemoryRuntime(ctx, config(), () => true);
   t.after(() => runtime.close());
   const value = session(); user(value, '记住这条经历。');
   const entry = runtime.require(value);
@@ -99,7 +95,7 @@ test('an interrupted acknowledgement can replay the same committed input without
 
 test('real Memory extraction and retrieval use the DSH model bridge', async t => {
   const { ctx, adapter } = await host(t, () => textChunks(JSON.stringify({ memories: [eventCandidate()] })));
-  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
+  const runtime = new DshMemoryRuntime(ctx, config(), () => true);
   t.after(() => runtime.close());
   const value = session(); user(value, '今天去了灯塔博物馆。');
   const { entry } = runtime.consume(value);
@@ -114,7 +110,7 @@ test('real Memory extraction and retrieval use the DSH model bridge', async t =>
 
 test('concurrent maintenance requests reuse one execution and shutdown aborts it', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
+  const runtime = new DshMemoryRuntime(ctx, config(), () => true);
   t.after(() => runtime.close());
   const value = session(); user(value, '一个待处理事件');
   const entry = runtime.require(value);
@@ -133,20 +129,19 @@ test('concurrent maintenance requests reuse one execution and shutdown aborts it
   assert.equal(runtime.sessions.size, 0);
 });
 
-test('the existing review console closes its listening socket with the session', async t => {
+test('the shared review console closes its listening socket with the plugin', async t => {
   const { ctx } = await host(t);
-  const runtime = new DshMemoryRuntime(ctx, config(t), () => true);
+  const runtime = new DshMemoryRuntime(ctx, config(), () => true);
   t.after(() => runtime.close());
   const value = session();
   user(value, '一条用于审核台维护的虚构消息。');
   const { entry } = runtime.consume(value);
   const address = await runtime.consoleUrl(entry);
   const url = new URL(address);
-  fs.writeFileSync(path.join(runtime.config.dataRoot, 'console-evidence.json'), JSON.stringify({ pid: process.pid, port: Number(url.port), state: 'listening' }));
   const response = await fetch(address);
   assert.equal(response.status, 200);
   assert.match(await response.text(), /Suzu Memory/);
-  const maintenance = await fetch(`${url.origin}/v1/maintenance/run`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lane: 'semantic' }) });
+  const maintenance = await consoleClient(url).api('/v1/maintenance/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lane: 'semantic' }) });
   const maintained = await maintenance.json();
   assert.equal(maintenance.status, 200, JSON.stringify(maintained));
   assert.equal(maintained.data.lane, 'semantic');
@@ -154,12 +149,11 @@ test('the existing review console closes its listening socket with the session',
   const server = net.createServer();
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(Number(url.port), '127.0.0.1', resolve); });
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  fs.writeFileSync(path.join(runtime.config.dataRoot, 'console-evidence.json'), JSON.stringify({ pid: process.pid, port: Number(url.port), state: 'closed-and-rebound' }));
 });
 
 test('the workbench switches live and cold libraries without restoring logs or starting model work', async t => {
   const { ctx, adapter } = await host(t, () => textChunks(JSON.stringify({ memories: [eventCandidate()] })));
-  const settings = config(t);
+  const settings = config();
   const cold = session('saved-conversation');
   user(cold, '今天去了灯塔博物馆。');
   const writer = new DshMemoryRuntime(ctx, settings, () => true);
@@ -189,25 +183,26 @@ test('the workbench switches live and cold libraries without restoring logs or s
   t.after(() => runtime.close());
   const calls = adapter.calls.length;
   const url = new URL(await runtime.consoleUrl(runtime.view(live)));
-  const list = (await (await fetch(new URL('/memory/sessions', url))).json()).data;
-  assert.equal(list.currentId, live.id);
-  assert.deepEqual(list.items, rows.map(row => ({ id: row.sessionId, title: row.projections.values.title })));
+  const client = consoleClient(url), coldId = sessionMemoryId(cold.id);
+  const list = (await (await client.raw('/memory/sessions?library=' + client.libraryId)).json()).data;
+  assert.equal(list.currentId, sessionMemoryId(live.id));
+  assert.deepEqual(list.items.map(({id,title})=>({id,title})), rows.map(row => ({ id: sessionMemoryId(row.sessionId), title: row.projections.values.title })));
   assert.equal(runtime.savedViews.size, 0, 'listing must not open any saved databases');
   const before = listings;
   await Promise.all([runtime.conversations(), runtime.conversations()]);
   assert.equal(listings - before, 1, 'concurrent directory reads share one request');
-  const selected = (await (await fetch(new URL('/memory/sessions/' + cold.id, url))).json()).data;
+  const selected = (await (await client.raw('/memory/sessions/' + coldId)).json()).data;
   const other = new URL(selected.url);
-  const graph = (await (await fetch(new URL('/v1/brain', other))).json()).data;
+  const otherClient = consoleClient(other);
+  assert.equal(other.origin,url.origin,'all libraries share one listener');
+  const graph = (await (await otherClient.api('/v1/brain')).json()).data;
   assert.ok(graph.nodes.some(node => node.id === memoryId));
-  assert.equal((await fetch(new URL('/v1/memories/' + memoryId, url))).status, 404);
-  assert.equal((await fetch(new URL('/v1/memories/' + memoryId, other))).status, 200);
-  assert.equal((await fetch(new URL('/v1/review-console', other))).status, 200);
-  assert.equal(runtime.savedViews.get(cold.id).memory.listInputEvents({ statuses: [] }).total, captured);
-  assert.deepEqual(actors(runtime.savedViews.get(cold.id).memory), originalActors);
-  assert.equal(runtime.savedViews.get(cold.id).memory.defaults.retrieval.timeZone, originalTimeZone);
-  assert.equal(await runtime.openConversation(cold.id), other.href);
-  assert.equal(await runtime.openConversation(live.id), url.href);
+  assert.equal((await client.api('/v1/memories/' + memoryId)).status, 404);
+  assert.equal((await otherClient.api('/v1/memories/' + memoryId)).status, 200);
+  assert.equal((await otherClient.api('/v1/review-console')).status, 200);
+  assert.equal(runtime.savedViews.get(coldId).memory.listInputEvents({ statuses: [] }).total, captured);
+  assert.deepEqual(actors(runtime.savedViews.get(coldId).memory), originalActors);
+  assert.equal(runtime.savedViews.get(coldId).memory.defaults.retrieval.timeZone, originalTimeZone);
   assert.equal(runtime.sessions.size, 1);
   assert.equal(runtime.savedViews.size, 1);
   assert.equal(ctx.sessions.get(cold.id), undefined);
@@ -224,15 +219,15 @@ test('the workbench switches live and cold libraries without restoring logs or s
     assert.equal(schedule.mock.callCount(), 0);
   } finally { await automatic.close(); }
   const resumedView = runtime.view(cold);
-  assert.equal(await runtime.consoleUrl(resumedView), other.href, 'opening the conversation reuses its saved-library server');
+  assert.equal(await runtime.consoleUrl(resumedView), other.href, 'opening the conversation reuses the workspace listener');
   await runtime.release(cold);
   detach();
-  assert.equal((await fetch(new URL('/v1/memories/' + memoryId, other))).status, 200);
+  assert.equal((await otherClient.api('/v1/memories/' + memoryId)).status, 200);
   assert.equal(adapter.calls.length, calls);
   assert.equal(history.mock.callCount(), 0);
   rows = rows.slice(0, 1);
-  assert.equal((await fetch(new URL('/memory/sessions/' + cold.id, url))).status, 404);
-  assert.equal((await fetch(new URL('/memory/sessions/not-a-real-session', url))).status, 404);
+  assert.equal((await client.raw('/memory/sessions/' + coldId)).status, 200, 'a deleted host conversation keeps a manageable saved library');
+  assert.equal((await client.raw('/memory/sessions/not-a-real-session')).status, 404);
   await runtime.close();
   for (const address of [url, other]) {
     const socket = net.createServer();
@@ -244,7 +239,7 @@ test('the workbench switches live and cold libraries without restoring logs or s
 test('live embedding edits preserve each running provider snapshot and apply to the next operation', async t => {
   const { ctx } = await host(t);
   let current = { baseUrl: 'https://embedding.invalid/v1', model: 'fixture-a', dimensions: 2, apiKey: 'fixture-key' };
-  const settings = config(t, { embedding: { get: () => current } });
+  const settings = config({ embedding: { get: () => current } });
   const requests = [];
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     const request = JSON.parse(options.body); requests.push(request);

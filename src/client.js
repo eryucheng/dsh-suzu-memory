@@ -50,6 +50,7 @@ window.__ModuleLoader__.load({
     };
     Object.assign(zh, {
       controls: '运行与费用', memoryEnabled: '插件总开关', memoryDisabled: '记忆运行已暂停，已有内容仍可查看和审核。',
+      dailyBudget: '每日记忆模型调用上限', dailyBudgetHint: '0 为不限。各会话共用，分析和向量调用均计入，失败调用也计入；重启不会重置。达到上限后保留待处理内容，按记忆时区跨日恢复。DSH 聊天与压缩不计入。',
       disableHint: '总开关控制整个插件。各会话默认关闭，需要在上方单独启用。',
       sessionMemory: '启用此会话的 Suzu Memory',
       sessionCostHint: '默认关闭。开启后会补录此会话已有的聊天；随时整理或波谷整理模式下会调用模型处理，产生费用。关闭保留已有数据，并停止此会话的采集、召回、整理和提示词替换。',
@@ -60,7 +61,7 @@ window.__ModuleLoader__.load({
       batchedCompaction: '启用分段压缩', compactionBatch: '每段原文字符上限（可选）', compactionAuto: '自动：按压缩模型容量',
       compactionParallel: '压缩并发数',
       compactionBatchHint: '留空按压缩模型的可用上下文分批，预留提示词和输出空间；也可填写不小于 4000 的字符上限。独立分段并行摘要，再按原顺序合并；最近原文仍由 DSH 决定。',
-      controlInvalid: '请检查时区、时段（如 22:00-08:00）、字符上限（留空或不小于 4000）和并发数（1–8）。', controlsSaved: '已保存，运行设置立即生效。',
+      controlInvalid: '请检查每日调用上限（0 或正整数）、时区、时段（如 22:00-08:00）、字符上限（留空或不小于 4000）和并发数（1–8）。', controlsSaved: '已保存，运行设置立即生效。',
       nativePersona: 'DSH 当前人设', nativeSystem: '查看 DSH 当前完整系统提示词', emptyPersona: 'DSH 未配置独立人设。',
       nativeCompaction: 'DSH 压缩模板', nativeReference: '官方参考模板 · 0.2.1-rc.3', nativeCaptured: '本会话最近使用的原始模板',
       waitingOffPeak: '等待波谷时段', manualPending: '等待手动整理',
@@ -68,6 +69,7 @@ window.__ModuleLoader__.load({
     });
     Object.assign(en, {
       controls: 'Operation & cost', memoryEnabled: 'Plugin master switch', memoryDisabled: 'Memory processing is paused. Saved content remains available to view and review.',
+      dailyBudget: 'Daily Memory model call limit', dailyBudgetHint: '0 means unlimited. Shared across conversations, including analysis, embedding and failed calls. Restarts do not reset it. Pending content is retained at the limit; allowance resets at midnight in the memory time zone. DSH chat and compaction are excluded.',
       disableHint: 'The master switch controls the whole plugin. Each conversation starts disabled and must be enabled above.',
       sessionMemory: 'Enable Suzu Memory for this conversation',
       sessionCostHint: 'Off by default. Enabling imports this conversation’s existing history. Automatic or off-peak processing calls the model and incurs charges. Disabling retains saved data and stops capture, recall, processing and prompt overrides for this conversation.',
@@ -78,7 +80,7 @@ window.__ModuleLoader__.load({
       batchedCompaction: 'Enable batched compaction', compactionBatch: 'Optional source character limit per batch', compactionAuto: 'Automatic: use compaction model capacity',
       compactionParallel: 'Concurrent compaction requests',
       compactionBatchHint: 'Leave blank to batch within the compaction model’s context, reserving space for instructions and output, or enter a character cap of at least 4,000. Summarize independent batches concurrently, then merge in order. DSH controls the retained original text.',
-      controlInvalid: 'Check the time zone, windows (e.g. 22:00-08:00), optional character cap (at least 4,000), and concurrency (1–8).', controlsSaved: 'Saved. Operation settings apply immediately.',
+      controlInvalid: 'Check the daily call limit (0 or a positive integer), time zone, windows (e.g. 22:00-08:00), optional character cap (at least 4,000), and concurrency (1–8).', controlsSaved: 'Saved. Operation settings apply immediately.',
       nativePersona: 'Current DSH persona', nativeSystem: 'View the current complete DSH system prompt', emptyPersona: 'DSH has no separate persona.',
       nativeCompaction: 'DSH compaction template', nativeReference: 'Official reference · 0.2.1-rc.3', nativeCaptured: 'Original template last used in this conversation',
       waitingOffPeak: 'Waiting for an off-peak window', manualPending: 'Waiting for manual processing',
@@ -112,6 +114,7 @@ window.__ModuleLoader__.load({
         mode: value.automaticMaintenance === false ? 'manual' : value.offPeakOnly ? 'off-peak' : 'automatic',
         batchedCompaction: value.batchedCompaction !== false, compactionBatchCharacters: value.compactionBatchCharacters || '',
         compactionConcurrency: value.compactionConcurrency ?? 3,
+        dailyRequestLimit: value.dailyRequestLimit ?? 0,
         timeZone: value.offPeakSchedule?.timeZone || 'Asia/Shanghai', weekends: value.offPeakSchedule?.weekends !== false,
         windows: (value.offPeakSchedule?.windows || [{ start: '00:00', end: '09:00' }, { start: '12:00', end: '14:00' }, { start: '18:00', end: '24:00' }])
           .map(item => item.start + '-' + item.end).join(', ') });
@@ -137,11 +140,12 @@ window.__ModuleLoader__.load({
           const cap = Number(draft.compactionBatchCharacters);
           if (!Number.isSafeInteger(cap) || (cap !== 0 && cap < 4000)) throw new Error('batch');
           if (!Number.isSafeInteger(Number(draft.compactionConcurrency)) || draft.compactionConcurrency < 1 || draft.compactionConcurrency > 8) throw new Error('concurrency');
+          if (!Number.isSafeInteger(Number(draft.dailyRequestLimit)) || Number(draft.dailyRequestLimit) < 0) throw new Error('budget');
         } catch { setMessage('controlInvalid'); return; }
         const values = { enabled: draft.enabled, automaticMaintenance: draft.mode !== 'manual', offPeakOnly: draft.mode === 'off-peak',
           offPeakSchedule: { timeZone: draft.timeZone, weekends: draft.weekends, windows },
           batchedCompaction: draft.batchedCompaction, compactionBatchCharacters: Number(draft.compactionBatchCharacters),
-          compactionConcurrency: Number(draft.compactionConcurrency) };
+          compactionConcurrency: Number(draft.compactionConcurrency), dailyRequestLimit: Number(draft.dailyRequestLimit) };
         setSaving(true);
         try {
           const accepted = await settingsForm.mutate(Object.entries(values).map(([key, value]) => ({ op: 'set', path: [key], value })), revision);
@@ -153,6 +157,9 @@ window.__ModuleLoader__.load({
         h('fieldset', { disabled: saving || snapshot.status !== 'ready' || !snapshot.writable },
           h('label', { className: 'suzu-check' }, h('input', { type: 'checkbox', checked: draft.enabled, onChange: e => change('enabled', e.target.checked) }), t('memoryEnabled')),
           h('p', null, t('disableHint')),
+          h('label', null, t('dailyBudget'), h('input', { type: 'number', min: 0, step: 1, value: draft.dailyRequestLimit,
+            onChange: e => change('dailyRequestLimit', e.target.value) })),
+          h('p', null, t('dailyBudgetHint')),
           h('label', null, t('maintenanceMode'), h('select', { value: draft.mode, onChange: e => change('mode', e.target.value) },
             ['automatic', 'off-peak', 'manual'].map(mode => h('option', { key: mode, value: mode }, t(mode))))),
           draft.mode === 'off-peak' && h(React.Fragment, null,

@@ -15,7 +15,7 @@ test('DSH memory tool preserves speaker attribution for model-authored queries',
   await ctx.plugin(SessionProjectionRegistry);
   await ctx.plugin(AgentRegistry);
   await ctx.plugin(AgentLoop, { agents: [] });
-  const settings = config(t, { memoryOwner: 'Suzu', userName: 'Rin', consoleEnabled: false });
+  const settings = config({ memoryOwner: 'Suzu', userName: 'Rin', consoleEnabled: false });
   const fiber = ctx.plugin(plugin, settings);
   await fiber;
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('perspective-conversation'),
@@ -30,8 +30,6 @@ test('DSH memory tool preserves speaker attribution for model-authored queries',
     await memory.processPendingEvents({ sourceScope: sourceScope(value), generator: async () => ({ output: { memories: [] } }) });
     const utterances = memory.listMemories({ kinds: ['utterance'] }).items;
     assert.equal(utterances.length, 2);
-    const ids = Object.fromEntries(utterances.map(node => [node.subject_role, node.id]));
-    assert.equal(memory.defaults.retrieval.recallReactivation.enabled, true);
     let sequence = 0;
     for (const [query, role] of [
       ['你喜欢吃火锅吗', 'user'],
@@ -44,21 +42,18 @@ test('DSH memory tool preserves speaker attribution for model-authored queries',
       ['Rin喜欢吃火锅吗', 'user'],
       ['Suzu喜欢吃火锅吗', 'agent'],
     ]) await t.test(query, async () => {
+      value.append('turn/start', { turn: sequence + 2 });
       const result = await ctx.tools.execute({ callId: ToolCallId(`perspective-${++sequence}`),
         name: 'suzu_memory_search', arguments: { query }, agent: handle.agent, signal: new AbortController().signal });
       assert.equal(result.isError, false, JSON.stringify(result));
       const text = result.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
-      const candidateIds = text.match(/^记忆 ID：(.*)$/mu)?.[1].split('、').filter(Boolean) || [];
-      assert.ok(candidateIds.includes(ids[role]), text);
+      assert.match(text, /^记忆编号：/u);
       const recordIds = [...text.matchAll(/^记忆编号：(.*)$/gmu)].map(match => match[1]);
-      assert.deepEqual(candidateIds, recordIds, 'only the displayed records may be used as continuation anchors');
+      assert.equal(new Set(recordIds).size,recordIds.length);
       for (const [holder, name] of [['user', 'Rin'], ['agent', 'Suzu']]) {
-        if (!recordIds.includes(ids[holder])) continue;
-        const start = text.indexOf('记忆编号：' + ids[holder] + '\n');
-        const end = text.indexOf('\n\n记忆编号：', start + 1);
-        const record = text.slice(start, end < 0 ? undefined : end);
-        assert.match(record, new RegExp('\\] ' + name + '：'));
-        assert.ok(record.includes(holder === 'user' ? 'I like hotpot.' : 'I dislike hotpot.'));
+        const phrase = holder === 'user' ? 'I like hotpot.' : 'I dislike hotpot.';
+        const evidence = text.split('\n\n').find(block => block.includes(phrase));
+        if (evidence) assert.match(evidence, new RegExp('\\] ' + name + '：'));
       }
       const sourcePhrase = role === "user" ? "I like hotpot." : "I dislike hotpot.";
       assert.equal(text.split(sourcePhrase).length - 1, 1, "selected source text must appear once");
@@ -68,7 +63,8 @@ test('DSH memory tool preserves speaker attribution for model-authored queries',
       assert.ok(states.length > 0);
       assert.ok(states.every(state => state.activation_count > 0));
     });
-    await t.test('structured preferences retain their distinct holders and supporting utterances', async () => {
+    await t.test('structured preference text retains the holder and does not repeat returned evidence', async () => {
+      value.append('turn/start', { turn: ++sequence + 1 });
       const sources = Object.fromEntries(utterances.map(node => [node.subject_role, memory.getMemory(node.id).sources[0].id]));
       memory.withRepository(repository => {
         for (const [role, key, name] of [['user', 'user', 'Rin'], ['agent', sessionMemoryId(value.id), 'Suzu']]) {
@@ -84,16 +80,67 @@ test('DSH memory tool preserves speaker attribution for model-authored queries',
         name: 'suzu_memory_search', arguments: { query: 'Rin喜欢吃火锅吗' }, agent: handle.agent, signal: new AbortController().signal });
       assert.equal(result.isError, false, JSON.stringify(result));
       const text = result.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
-      const candidateIds = text.match(/^记忆 ID：(.*)$/mu)?.[1].split('、').filter(Boolean) || [];
-      assert.ok(candidateIds.includes('user-hotpot-preference'), text);
       assert.ok(text.includes('Rin明确表示喜欢吃火锅。'), text);
-      if (candidateIds.includes('agent-hotpot-preference')) assert.ok(text.includes('Suzu明确表示不喜欢吃火锅。'), text);
-      for (const [role, phrase] of [['user', 'I like hotpot.'], ['agent', 'I dislike hotpot.']]) {
-        if (candidateIds.includes(ids[role])) assert.equal(text.split(phrase).length - 1, 1);
+      for (const phrase of ['I like hotpot.', 'I dislike hotpot.']) {
+        if (text.includes(phrase)) assert.equal(text.split(phrase).length - 1, 1);
       }
+    });
+    await t.test('long original evidence retains its final fact under the default capacity', async () => {
+      const content='远山露营经历。'+ '路途中记录了沿途的风景和行程细节。'.repeat(120)+'最后确认：露营地点是青石湖。';
+      user(value,content,++sequence + 1);assistant(value,'记住了。',sequence + 1);
+      await memory.processPendingEvents({sourceScope:sourceScope(value),generator:async()=>({output:{memories:[]}})});
+      const result=await ctx.tools.execute({callId:ToolCallId('long-evidence'),name:'suzu_memory_search',arguments:{query:'远山露营经历'},
+        agent:handle.agent,signal:new AbortController().signal});
+      assert.equal(result.isError,false,JSON.stringify(result));
+      const text=result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n');
+      assert.ok(text.includes(content),text);
+      assert.ok(text.length<=settings.recallMaximumCharacters);
     });
   } finally {
     await handle.dispose();
     await fiber.dispose();
+  }
+});
+
+test('DSH shares concurrent recall, delivers evidence once per turn, and resets for the next turn', async t => {
+  const { ctx, adapter } = await host(t);
+  await ctx.plugin(SessionProjectionRegistry);
+  await ctx.plugin(AgentRegistry);
+  await ctx.plugin(AgentLoop, { agents: [] });
+  const settings = config({ memoryOwner: 'Suzu', userName: 'Lin', consoleEnabled: false });
+  const fiber = ctx.plugin(plugin, settings); await fiber;
+  const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('recall-session'),
+    agentOptions: { provider: 'test', model: 'deepseek-test' } });
+  let prototype, original;
+  try {
+    await enableConversation(ctx, handle.agent);
+    const value = handle.agent.session;
+    user(value, '昨天去了山谷博物馆。'); assistant(value, '记住了。');
+    const memory = createMemoryService({ dataRoot: settings.dataRoot, agentId: sessionMemoryId(value.id) });
+    await memory.processPendingEvents({ sourceScope: sourceScope(value), generator: async () => ({ output: { memories: [] } }) });
+    prototype = Object.getPrototypeOf(memory); original = prototype.search;
+    const reads = [];
+    prototype.search = function(query, options) { reads.push(options); return original.call(this, query, options); };
+    let call = 0;
+    const execute = async () => {
+      const result = await ctx.tools.execute({ callId: ToolCallId(`shared-${++call}`), name: 'suzu_memory_search',
+        arguments: { query: '山谷博物馆' }, agent: handle.agent, signal: new AbortController().signal });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      return result.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+    };
+    const parallel = await Promise.all([execute(), execute()]);
+    assert.equal(reads.length, 1);
+    assert.equal(parallel.filter(text => text.includes('昨天去了山谷博物馆。')).length, 1);
+    assert.match(parallel.find(text => text.includes('昨天去了山谷博物馆。')), /^记忆编号：m1\n/u);
+    assert.ok(!(await execute()).includes('昨天去了山谷博物馆。'));
+    const afterExhaustion = reads.length;
+    await execute();
+    assert.equal(reads.length, afterExhaustion, 'The unchanged exhausted query reuses its result.');
+    user(value, '再回想一下昨天去哪了。', 2);
+    assert.ok((await execute()).includes('昨天去了山谷博物馆。'));
+    assert.equal(adapter.calls.length, 0);
+  } finally {
+    if (prototype && original) prototype.search = original;
+    await handle.dispose(); await fiber.dispose();
   }
 });

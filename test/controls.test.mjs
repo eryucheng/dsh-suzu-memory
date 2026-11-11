@@ -14,7 +14,7 @@ import { compactionBatches } from '../src/compaction.mjs';
 import { DshMemoryRuntime } from '../src/runtime.mjs';
 import { Config, resolveConfig } from '../src/config.mjs';
 import * as plugin from '../src/index.mjs';
-import { host, config, session, user, assistant, textChunks, eventCandidate, enableConversation } from './helpers.mjs';
+import { host, config, session, user, assistant, textChunks, eventCandidate, enableConversation, consoleClient } from './helpers.mjs';
 
 test('processing windows honor boundaries, weekends, overnight windows and the selected time zone', () => {
   const settings = resolveConfig({ offPeakOnly: true });
@@ -32,7 +32,7 @@ test('processing windows honor boundaries, weekends, overnight windows and the s
 
 test('peak hours save dialogue locally and the next allowed window drains the deferred short tail', async t => {
   const {ctx,adapter}=await host(t);
-  const runtime=new DshMemoryRuntime(ctx,config(t,{automaticMaintenance:true}), () => true);t.after(()=>runtime.close());
+  const runtime=new DshMemoryRuntime(ctx,config({automaticMaintenance:true}), () => true);t.after(()=>runtime.close());
   let allowed=false;
   t.mock.method(runtime,'window',()=>({enabled:true,automatic:true,offPeakOnly:true,allowed}));
   const value=session();user(value,'昨天我去过灯塔博物馆。');assistant(value,'记住了。');
@@ -55,7 +55,7 @@ test('a window closing aborts automatic processing and resumes without quarantin
     options.signal.throwIfAborted();
     return Response.json({data:[{index:0,embedding:[1,0]}]});
   });
-  const runtime=new DshMemoryRuntime(ctx,config(t,{automaticMaintenance:true,
+  const runtime=new DshMemoryRuntime(ctx,config({automaticMaintenance:true,
     embedding:{baseUrl:'https://embedding.invalid/v1',model:'test-vector',dimensions:2,apiKey:'fixture-key'}}), () => true);t.after(()=>runtime.close());
   let allowed=true;t.mock.method(runtime,'window',()=>({enabled:true,automatic:true,offPeakOnly:true,allowed}));
   const value=session();user(value,'约好下周日去看展览。');assistant(value,'好的。');
@@ -72,7 +72,7 @@ test('a window closing aborts automatic processing and resumes without quarantin
 });
 
 test('explicit processing remains available outside automatic windows', async t => {
-  const {ctx,adapter}=await host(t);const runtime=new DshMemoryRuntime(ctx,config(t), () => true);t.after(()=>runtime.close());
+  const {ctx,adapter}=await host(t);const runtime=new DshMemoryRuntime(ctx,config(), () => true);t.after(()=>runtime.close());
   t.mock.method(runtime,'window',()=>({enabled:true,automatic:true,offPeakOnly:true,allowed:false}));
   const value=session();user(value,'上周去看了海。');assistant(value,'听起来不错。');
   await runtime.maintain(value,{force:true});assert.ok(adapter.calls.length>0);
@@ -87,7 +87,7 @@ test('process now joins active automatic work and continues across the window bo
     if (!held) { held = true; started(); await gate; }
     return textChunks('{"memories":[]}');
   });
-  const runtime = new DshMemoryRuntime(ctx, config(t, { automaticMaintenance: true }), () => true);
+  const runtime = new DshMemoryRuntime(ctx, config({ automaticMaintenance: true }), () => true);
   t.after(() => runtime.close());
   let allowed = true;
   t.mock.method(runtime, 'window', () => ({ enabled: true, automatic: true, offPeakOnly: true, allowed }));
@@ -105,7 +105,7 @@ test('process now joins active automatic work and continues across the window bo
 test('session opt-in scopes the tool and the master switch restores native prompts', async t => {
   const {ctx,adapter}=await host(t);let enabled=true;
   await ctx.plugin(Projection);await ctx.plugin(AgentRegistry);await ctx.plugin(AgentLoop,{agents:[]});
-  await ctx.plugin({inject:plugin.inject,apply(child){plugin.apply(child,{...config(t),enabled:{get:()=>enabled}});}});
+  await ctx.plugin({inject:plugin.inject,apply(child){plugin.apply(child,{...config(),enabled:{get:()=>enabled}});}});
   const first=await ctx.agentLoop.createAgent(ctx,{sessionId:SessionId('switch-chat'),agentOptions:{provider:'test',model:'deepseek-test'}});
   const second=await ctx.agentLoop.createAgent(ctx,{sessionId:SessionId('switch-work'),agentOptions:{provider:'test',model:'deepseek-test'}});
   t.after(()=>Promise.all([first.dispose(),second.dispose()]));
@@ -123,7 +123,7 @@ test('session opt-in scopes the tool and the master switch restores native promp
   assert.match(await assembly(),/Original persona/);
   const pausedStatus=JSON.parse((await ctx.commands.execute(agent,'/suzu-memory-status',[],new AbortController().signal)).result.text);
   assert.equal(pausedStatus.enabled,false);
-  assert.equal((await fetch(new URL('/console/',pausedStatus.consoleUrl))).status,200);
+  assert.equal((await consoleClient(pausedStatus.consoleUrl).review()).status,200);
   assert.equal(adapter.calls.length,0);
   enabled=true;ctx.emit('loader/volatile-update');
   assert.ok(agent.ctx.tools.schemas(agent).some(tool=>tool.name==='suzu_memory_search'));
@@ -147,7 +147,7 @@ test('disabling one conversation aborts its work and re-enabling retains all pen
     if(hold){started();await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));}
     return textChunks('{"memories":[]}');
   });
-  const runtime=new DshMemoryRuntime(ctx,config(t),()=>active);t.after(()=>runtime.close());
+  const runtime=new DshMemoryRuntime(ctx,config(),()=>active);t.after(()=>runtime.close());
   const value=session();user(value,'上周去了海边。');assistant(value,'记住了。');
   const work=runtime.maintain(value,{force:true});await start;
   active=false;await runtime.refreshSession(value.id);assert.equal((await work).status,'paused');
@@ -161,7 +161,7 @@ test('disabling one conversation aborts its work and re-enabling retains all pen
 async function loop(t, script, overrides={}, enabled=true) {
   const result=await host(t,script);
   await result.ctx.plugin(Projection);await result.ctx.plugin(AgentRegistry);await result.ctx.plugin(AgentLoop,{agents:[]});await result.ctx.plugin(TokenMeter);
-  await result.ctx.plugin(plugin,config(t,overrides));
+  await result.ctx.plugin(plugin,config(overrides));
   const handle=await result.ctx.agentLoop.createAgent(result.ctx,{sessionId:SessionId('batched-'+t.name),agentOptions:{provider:'test',model:'deepseek-test'}});
   t.after(()=>handle.dispose());if(enabled)await enableConversation(result.ctx,handle.agent);return {...result,handle,agent:handle.agent};
 }
@@ -320,33 +320,34 @@ test('graph and review share one page and HTTP data stays scoped to its conversa
   const entry=entries.get(agent.id);await entry.memory.processPendingEvents({generator:entry.generator,runMaintenance:false});
   const status=await ctx.commands.execute(agent,'/suzu-memory-status',[],new AbortController().signal);
   const url=new URL(JSON.parse(status.result.text).consoleUrl),calls=adapter.calls.length;
+  const client=consoleClient(url);
   const reads=t.mock.method(entry.memory,'brainSnapshot',entry.memory.brainSnapshot.bind(entry.memory));
   const page=await fetch(url);const html=await page.text();assert.match(html,/graph-tab/);assert.match(html,/review-tab/);
   assert.equal(reads.mock.callCount(),0);
-  const graph=(await(await fetch(url.origin+'/v1/brain')).json()).data;
+  const graph=(await(await client.api('/v1/brain')).json()).data;
   const node=graph.nodes.find(item=>item.title==='参观灯塔博物馆');assert.ok(node);
-  assert.match(await(await fetch(url.origin+'/console/')).text(),/Suzu Memory/);
+  assert.match(await(await client.review()).text(),/Suzu Memory/);
   const other=await ctx.agentLoop.createAgent(ctx,{sessionId:SessionId('separate-graph'),agentOptions:{provider:'test',model:'deepseek-test'}});t.after(()=>other.dispose());
   await enableConversation(ctx,other.agent);
   const otherStatus=await ctx.commands.execute(other.agent,'/suzu-memory-status',[],new AbortController().signal);
   const otherUrl=new URL(JSON.parse(otherStatus.result.text).consoleUrl);
-  assert.equal((await fetch(otherUrl.origin+'/v1/memories/'+node.id)).status,404);
+  assert.equal((await consoleClient(otherUrl).api('/v1/memories/'+node.id)).status,404);
   const disabled=await ctx.commands.execute(agent,'/suzu-memory-enable '+JSON.stringify({enabled:false,revision:ctx.suzuMemorySettings.read(agent.id).revision}),[],new AbortController().signal);
   assert.equal(disabled.result.kind,'success');
   const paused=JSON.parse((await ctx.commands.execute(agent,'/suzu-memory-status',[],new AbortController().signal)).result.text);
   assert.equal(paused.enabled,false);
   assert.equal(paused.consoleUrl,url.href);
-  const reviewPage=await(await fetch(url.origin+'/console/')).text();
+  const reviewPage=await(await client.review()).text();
   assert.ok(reviewPage.includes('/memory/review.css'));
   assert.ok(reviewPage.includes('/console/app.js'));
   assert.equal((await fetch(url.origin+'/memory/base.css')).status,200);
-  assert.equal((await fetch(url.origin+'/v1/memories/'+node.id)).status,200);
+  assert.equal((await client.api('/v1/memories/'+node.id)).status,200);
   assert.equal(adapter.calls.length,calls);
 });
 
 test('paused libraries reopen after restart without importing conversation history or calling models', async t => {
   const {ctx,adapter}=await host(t,()=>textChunks(JSON.stringify({memories:[eventCandidate()]})));
-  const settings=config(t);
+  const settings=config();
   const value=session();user(value,'今天去了灯塔博物馆。');assistant(value,'记下了。');
   const active=new DshMemoryRuntime(ctx,settings,()=>true);
   const {entry}=active.consume(value);
@@ -362,10 +363,11 @@ test('paused libraries reopen after restart without importing conversation histo
   assert.equal(reopened.memory.listInputEvents({statuses:[]}).total,captured);
   assert.equal(history.mock.callCount(),0);
   const url=new URL(await paused.consoleUrl(reopened));
-  const review=await(await fetch(url.origin+'/v1/review-console')).json();
+  const client=consoleClient(url);
+  const review=await(await client.api('/v1/review-console')).json();
   assert.equal(review.status,'success');
-  assert.equal((await fetch(url.origin+'/v1/memories/'+saved.id)).status,200);
-  const run=await fetch(url.origin+'/v1/maintenance/run',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+  assert.equal((await client.api('/v1/memories/'+saved.id)).status,200);
+  const run=await client.api('/v1/maintenance/run',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
   assert.ok(!run.ok);
   assert.throws(()=>paused.consume(value),{code:'MEMORY_DISABLED'});
   assert.equal(adapter.calls.length,calls);

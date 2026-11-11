@@ -1,7 +1,6 @@
 import { BlockAssembler, LlmError, CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm';
 import { liveValue } from './schedule.mjs';
 
-const NATIVE_DIRECTIVE = 'You are now acting as a compaction engine';
 const SEGMENT_INSTRUCTION = '概括本段对话，保留后续交流需要的人物、时间、变化和未完成事项。';
 const MERGE_INSTRUCTION = '按时间顺序合并这些摘要，保留事实归属和变化，合并重复内容。';
 
@@ -110,9 +109,11 @@ export function installCompactionPrompts(ctx, prompts, config = {}, progress = (
   const redirected = new WeakSet();
   ctx.on('llm/stream', (options, next) => {
     const last = options.messages?.at(-1);
-    if (options.purpose !== 'compaction' || !options.sessionId || redirected.has(options)
-      || last?.role !== 'user' || last.content?.length !== 1
-      || last.content[0].type !== 'text' || !last.content[0].text.startsWith(NATIVE_DIRECTIVE)) return next();
+    if (options.purpose !== 'compaction' || !options.sessionId || redirected.has(options)) return next();
+    if (last?.role !== 'user' || last.content?.length !== 1 || last.content[0].type !== 'text') {
+      if (!prompts.isEnabled(options.sessionId)) return next();
+      throw Object.assign(new Error('DSH 压缩请求的指令结构不受支持，原上下文保留。'), { code: 'COMPACTION_FORMAT_UNSUPPORTED' });
+    }
     prompts.nativeCompaction.set(options.sessionId, last.content[0].text);
     if (!prompts.isEnabled(options.sessionId)) return next();
     const instruction = prompts.compactionInstruction(options.sessionId) ?? last.content[0].text;

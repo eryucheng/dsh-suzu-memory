@@ -21,7 +21,7 @@ test('a memory storage failure warns while DSH still creates and chats in the se
   await ctx.plugin(AgentLoop, { agents: [] });
   const warnings = [];
   t.mock.method(DshMemoryRuntime.prototype, 'report', error => warnings.push(error));
-  const settings = config(t, { consoleEnabled: false });
+  const settings = config({ consoleEnabled: false });
   fs.writeFileSync(path.join(settings.dataRoot, 'agents'), 'blocked memory directory');
   const fiber = ctx.plugin(plugin, settings);
   await fiber;
@@ -56,7 +56,7 @@ test('the installed DSH services run conversation, maintenance, recall, and plug
   await ctx.plugin(SessionProjectionRegistry);
   await ctx.plugin(AgentRegistry);
   await ctx.plugin(AgentLoop, { agents: [] });
-  const settings = config(t);
+  const settings = config();
   const fiber = ctx.plugin(plugin, settings);
   await fiber;
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('conversation-integration'), agentOptions: { provider: 'test', model: 'deepseek-test' } });
@@ -84,7 +84,6 @@ test('the installed DSH services run conversation, maintenance, recall, and plug
   assert.deepEqual(subsequent.messages.slice(0, prior.messages.length), prior.messages);
   assert.ok(!JSON.stringify(subsequent.messages).includes('consoleUrl'));
   assert.ok(!JSON.stringify(subsequent.messages).includes('suzu-memory-maintain'));
-  fs.writeFileSync(path.join(settings.dataRoot, 'console-evidence.json'), JSON.stringify({ pid: process.pid, port: Number(url.port), state: 'listening' }));
   await handle.dispose();
   await fiber.dispose();
   const missing = await ctx.tools.execute({ callId: ToolCallId('after-dispose'), name: 'suzu_memory_search', arguments: { query: 'museum' }, signal: new AbortController().signal });
@@ -92,7 +91,6 @@ test('the installed DSH services run conversation, maintenance, recall, and plug
   const server = net.createServer();
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(Number(url.port), '127.0.0.1', resolve); });
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  fs.writeFileSync(path.join(settings.dataRoot, 'console-evidence.json'), JSON.stringify({ pid: process.pid, port: Number(url.port), state: 'closed-and-rebound' }));
 });
 
 test('normal DSH short conversations make no analysis calls until explicit maintenance', async t => {
@@ -101,7 +99,7 @@ test('normal DSH short conversations make no analysis calls until explicit maint
   await ctx.plugin(SessionProjectionRegistry);
   await ctx.plugin(AgentRegistry);
   await ctx.plugin(AgentLoop, { agents: [] });
-  await ctx.plugin(plugin, config(t, { automaticMaintenance: true }));
+  await ctx.plugin(plugin, config({ automaticMaintenance: true }));
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('automatic-maintenance'), agentOptions: { provider: 'test', model: 'deepseek-test' } });
   await enableConversation(ctx, handle.agent);
   handle.agent.followup(createUserMessage({ content: [{ type: 'text', text: '这是虚构测试对话。' }], source: { kind: 'user' } }));
@@ -111,6 +109,38 @@ test('normal DSH short conversations make no analysis calls until explicit maint
   assert.equal(result.result.kind, 'success', JSON.stringify(result));
   assert.ok(adapter.calls.some(call => call.system?.includes('JSON Schema')));
   await handle.dispose();
+});
+
+test('successive memory tools use live embedding settings without replacing their recall session', async t => {
+  const { ctx } = await host(t);
+  await ctx.plugin(SessionProjectionRegistry);
+  await ctx.plugin(AgentRegistry);
+  await ctx.plugin(AgentLoop, { agents: [] });
+  let embedding = { baseUrl: 'https://embedding.invalid/v1', model: 'fixture-a', dimensions: 2, apiKey: 'fixture-key' };
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    const request = JSON.parse(options.body); requests.push(request.model);
+    return Response.json({ model: request.model, data: [{ index: 0, embedding: Array(request.dimensions).fill(1) }] });
+  });
+  const settings = config({ consoleEnabled: false, embedding: { get: () => embedding } });
+  const fiber = ctx.plugin({ inject: plugin.inject, apply(child) { plugin.apply(child, settings); } });
+  await fiber;
+  const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('embedding-edit-tools'),
+    agentOptions: { provider: 'test', model: 'deepseek-test' } });
+  t.after(async () => { await handle.dispose(); await fiber.dispose(); });
+  await enableConversation(ctx, handle.agent);
+  let sequence = 0;
+  const search = async () => {
+    const result = await ctx.tools.execute({ callId: ToolCallId(`live-query-${++sequence}`), name: 'suzu_memory_search',
+      arguments: { query: 'museum ' + sequence }, agent: handle.agent, signal: new AbortController().signal });
+    assert.equal(result.isError, false, JSON.stringify(result));
+  };
+  await search();
+  embedding = { ...embedding, model: 'fixture-b', dimensions: 3 };
+  await search();
+  embedding = { ...embedding, enabled: false };
+  await search();
+  assert.deepEqual(requests, ['fixture-a', 'fixture-b']);
 });
 
 test('complete DSH turns schedule length batches while idle notifications do no work', { timeout: 15000 }, async t => {
@@ -128,7 +158,7 @@ test('complete DSH turns schedule length batches while idle notifications do no 
   await ctx.plugin(AgentRegistry);
   await ctx.plugin(AgentLoop, { agents: [] });
   ctx.on('agent/turn-stopping', async ({ turn }) => { if (turn === 3) { reached(); await gate; } });
-  const settings = config(t, { automaticMaintenance: true, archiveBatchCharacters: 1000, consoleEnabled: false });
+  const settings = config({ automaticMaintenance: true, archiveBatchCharacters: 1000, consoleEnabled: false });
   const fiber = ctx.plugin(plugin, settings);
   await fiber;
   const handle = await ctx.agentLoop.createAgent(ctx, { sessionId: SessionId('length-batch-scheduling'),

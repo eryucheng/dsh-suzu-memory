@@ -1,5 +1,12 @@
 import { mountBrainCanvas } from "./renderer.js";
 const $ = (selector) => document.querySelector(selector);
+const bootstrap = new URLSearchParams(location.hash.slice(1));
+if (bootstrap.has("key")) {
+  sessionStorage.setItem("suzu-memory-api-key", bootstrap.get("key"));
+  history.replaceState(null, "", location.pathname + location.search + "#" + (bootstrap.get("view") === "review" ? "review" : "graph"));
+}
+const accessKey = sessionStorage.getItem("suzu-memory-api-key") || "";
+const libraryId = new URL(location.href).searchParams.get("library") || "";
 const english = new URL(location.href).searchParams.get("lang") === "en";
 const copy = english ? {
   graph: "Memory graph",
@@ -42,6 +49,20 @@ const copy = english ? {
 };
 Object.assign(copy, english ? { conversation: "Conversation", sessionsLoading: "Loading conversations…", sessionsRefresh: "Refresh conversations", switching: "Switching conversation…", sessionsFailed: "Unable to load conversations. Please refresh." }
   : { conversation: "查看会话", sessionsLoading: "正在读取会话…", sessionsRefresh: "刷新会话列表", switching: "正在切换会话…", sessionsFailed: "会话读取失败，请刷新重试。" });
+Object.assign(copy, english ? {
+  delete: "Delete saved memory", orphan: "Deleted conversation", noLibrary: "No saved memory for this conversation.",
+  deleteConfirm: "Delete all saved memory, originals, backups and memory settings for this conversation? This cannot be undone. The DSH conversation will remain and its memory switch will be turned off.",
+  deleted: "Saved memory deleted. This conversation's memory is now off.",
+  budget: "Memory model calls today", unlimited: "unlimited", budgetReached: "Daily limit reached; pending content is retained.",
+  budgetUnavailable: "The budget record cannot be read. Memory model calls are paused.",
+} : {
+  delete: "删除记忆数据", orphan: "已删除会话", noLibrary: "此会话尚无记忆数据。",
+  deleteConfirm: "彻底删除此会话的记忆、原文副本、备份和记忆设置？此操作无法撤销。DSH 聊天记录保留，此会话的记忆开关会关闭。",
+  deleted: "记忆数据已删除，此会话的记忆开关已关闭。",
+  budget: "今日记忆模型调用", unlimited: "不限", budgetReached: "今日额度已用完，待处理内容已保留。",
+  budgetUnavailable: "预算记录不可读，模型调用已暂停。",
+});
+$("#delete-library").textContent = copy.delete;
 document.documentElement.lang = english ? "en" : "zh-CN";
 for (const [id, value] of Object.entries({ "graph-tab": copy.graph, "review-tab": copy.review, "graph-title": copy.graph, "workspace-label": copy.workspace, "legend-actors": copy.actors, "legend-episodes": copy.episodes, "legend-states": copy.states, "legend-events": copy.events, refresh: copy.refresh, motion: copy.pause, hint: copy.hint })) $("#" + id).textContent = value;
 $("#search").placeholder = copy.search;
@@ -50,7 +71,7 @@ $("#conversation-label").textContent = copy.conversation;
 $("#conversation option").textContent = copy.sessionsLoading;
 $("#refresh-sessions").title = copy.sessionsRefresh;
 $("#refresh-sessions").setAttribute("aria-label", copy.sessionsRefresh);
-let currentSession, sessionRequest;
+let currentSession = libraryId, sessionRequest, currentLibrary;
 let graph, renderer, selected, graphRequest, detailRequest, view = "graph", animate = true, evidence = [];
 const lifetime = new AbortController();
 function sessionMessage(message = "") {
@@ -61,16 +82,21 @@ async function loadSessions() {
   $("#conversation").disabled = true;
   $("#refresh-sessions").disabled = true;
   try {
-    const data = await api("/memory/sessions");
+    const data = await api("/memory/sessions?library=" + encodeURIComponent(libraryId));
     currentSession = data.currentId;
+    currentLibrary = data.items.find(item => item.id === currentSession);
     $("#conversation").replaceChildren(...data.items.map(item => {
       const option = document.createElement("option");
       option.value = item.id;
-      option.textContent = item.title;
+      option.textContent = (item.orphaned ? copy.orphan + " · " : "") + item.title;
       return option;
     }));
     $("#conversation").value = currentSession;
-    sessionMessage();
+    $("#delete-library").disabled = !currentLibrary?.stored;
+    const limit = data.budget.limit || copy.unlimited;
+    $("#budget-status").textContent = data.budget.error ? copy.budgetUnavailable
+      : `${copy.budget}: ${data.budget.used} / ${limit}` + (data.budget.exhausted ? " · " + copy.budgetReached : "");
+    sessionMessage(currentLibrary?.stored ? "" : copy.noLibrary);
   } catch (error) {
     if (!lifetime.signal.aborted) sessionMessage(copy.sessionsFailed);
   } finally {
@@ -89,7 +115,9 @@ async function switchSession(id) {
     const { url } = await api("/memory/sessions/" + encodeURIComponent(id), AbortSignal.any([request.signal, lifetime.signal]));
     if (request !== sessionRequest) return;
     const target = new URL(url);
-    target.hash = view;
+    const fragment = new URLSearchParams(target.hash.slice(1));
+    fragment.set("view", view);
+    target.hash = fragment.toString();
     if (english) target.searchParams.set("lang", "en");
     location.assign(target.href);
   } catch (error) {
@@ -101,8 +129,9 @@ async function switchSession(id) {
     }
   }
 }
-async function api(path, signal = lifetime.signal) {
-  const response = await fetch(path, { signal });
+async function api(path, signal = lifetime.signal, options = {}) {
+  const response = await fetch(path.startsWith("/v1/") ? "/libraries/" + encodeURIComponent(libraryId) + path : path,
+    { ...options, signal, headers: { ...options.headers, authorization: "Bearer " + accessKey } });
   const payload = await response.json();
   if (!response.ok || payload.status !== "success") throw new Error(payload.error?.message || copy.failed);
   return payload.data;
@@ -116,6 +145,7 @@ function paint() {
   $("#counts").textContent = `${graph.counts.nodes} ${copy.nodes} · ${graph.counts.edges} ${copy.edges}`;
 }
 async function load() {
+  if (!currentLibrary?.stored) { $("#message").textContent = copy.noLibrary; return; }
   graphRequest?.abort();
   const request = graphRequest = new AbortController();
   $("#refresh").disabled = true;
@@ -198,13 +228,30 @@ function show(next) {
   if (next === "review") {
     renderer?.destroy();
     renderer = null;
-    if (!$("iframe").hasAttribute("src")) $("iframe").src = "/console/";
+    if (currentLibrary?.stored && !$("iframe").hasAttribute("src")) $("iframe").src = "/console/?library=" + encodeURIComponent(libraryId);
   } else if (graph) paint();
   else if (!graphRequest) void load();
 }
 $("#graph-tab").onclick = () => show("graph");
 $("#conversation").onchange = event => { void switchSession(event.target.value); };
 $("#refresh-sessions").onclick = () => { void loadSessions(); };
+$("#delete-library").onclick = async () => {
+  if (!currentLibrary?.stored || !confirm(copy.deleteConfirm)) return;
+  $("#delete-library").disabled = true;
+  graphRequest?.abort(); detailRequest?.abort();
+  try {
+    await api("/memory/sessions/" + encodeURIComponent(currentSession), lifetime.signal,
+      { method: "DELETE", headers: { "x-suzu-confirm-delete": currentSession } });
+    renderer?.destroy(); renderer = null; graph = null; selected = null; evidence = [];
+    const canvas = $("canvas");
+    canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    $("iframe").removeAttribute("src");
+    await loadSessions();
+    show("graph");
+    $("#detail").hidden = true; $("#matches").replaceChildren(); $("#counts").textContent = "";
+    sessionMessage(copy.deleted);
+  } catch (error) { sessionMessage(error.message); $("#delete-library").disabled = false; }
+};
 $("#review-tab").onclick = () => show("review");
 $("#refresh").onclick = () => {
   void load();
@@ -227,5 +274,4 @@ addEventListener("pagehide", () => {
   sessionRequest?.abort();
   renderer?.destroy();
 });
-show(location.hash === "#review" ? "review" : "graph");
-void loadSessions();
+void loadSessions().then(() => show(location.hash === "#review" ? "review" : "graph"));

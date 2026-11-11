@@ -264,6 +264,14 @@ dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.7.0.tgz"
 /suzu-memory-maintain    立即整理当前会话的记忆
 ```
 
+图谱与审核台共用一个本机页面，可切换查看不同会话，也能管理已经从 DSH 删除的会话所留下的记忆。页面地址附带临时访问凭证，所有记忆数据接口均需验证；插件重启后，请从 DSH 重新打开页面。
+
+### 每日调用上限
+
+在「运行与费用」中可设置「每日记忆模型调用上限」，默认 `0` 表示不限。各会话共用同一个额度，记忆分析和向量调用均计入，失败调用也计入；重启插件不会清零。额度用完后停止发起新的记忆模型调用，待处理原文保留，按记忆时区在次日恢复；手动整理也受此额度限制。DSH 自身的聊天和压缩不计入。
+
+这是调用次数上限，实际费用取决于模型价格及每次请求的输入、输出量。图谱与审核台页面显示当天已用次数。
+
 ### 会话人设
 
 | 选项 | 说明 |
@@ -339,8 +347,7 @@ dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.7.0.tgz"
 
 **卸载**：插件停用或卸载后停止收录，人设和压缩提示词也不再生效；已有的记忆数据和会话提示词文件会保留。以后重新安装时，使用原来的 profile 和数据目录即可接着读取。
 
-> [!WARNING]
-> 在 DSH 会话列表中删除会话，**目前不会**同时删除该会话的记忆数据。需要手动清理时，可以用 `/suzu-memory-status` 返回的 `status.databasePath` 找到对应的数据库。操作数据文件之前，先停止相关会话或关闭 DSH。
+在 DSH 会话列表中删除会话后，它的记忆仍然保留。需要清理时，在图谱与审核台页面选中对应记忆库，点击「删除记忆数据」并确认。插件会停止该库的工作，删除记忆、原文副本、备份及会话记忆设置；DSH 聊天记录保留，此会话的记忆开关关闭。删除无法撤销。
 
 ## 整理时机
 
@@ -378,6 +385,7 @@ dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.7.0.tgz"
 | `memoryOwner` / `userName` | `Assistant` / `User` | 整理材料中对助手和用户的称呼 |
 | `timeZone` | 空 | 留空跟随系统时区；可指定 `Asia/Shanghai` 等 IANA 时区，用于记忆日期与召回 |
 | `automaticMaintenance` | `true` | 内容足量后分批后台整理，压缩时处理尾批 |
+| `dailyRequestLimit` | `0` | 每日记忆模型调用次数上限，各会话共用；0 为不限，按 `timeZone`（留空跟随系统）跨日恢复 |
 | `enabled` | `true` | 记忆总开关；关闭保留数据，暂停采集、召回、整理及提示词替换 |
 | `offPeakOnly` | `false` | 自动整理仅在 `offPeakSchedule` 允许的时段执行 |
 | `offPeakSchedule` | 北京时间波谷时段 | `timeZone`、`weekends` 和 `windows: [{start, end}]`；时段使用 `HH:mm`，结束时间可为 `24:00` |
@@ -417,6 +425,20 @@ dsh plugin --profile web add "D:/Downloads/dsh-suzu-memory-0.7.0.tgz"
 </details>
 
 ## 开发与打包
+
+### 题库评测与引擎接口
+
+安装包提供独立评测入口，无需启动 DSH。将题库转换为统一格式后，可以运行建库、检索答题和评分，支持并发、续跑、对照组与实时进度窗口：
+
+```sh
+npx suzu-memory-benchmark --dataset ./dataset.json --config ./memory.json --output ./results --concurrency 3 --open-progress
+```
+
+记忆组默认必须先检索，再给出最终答案。模型和检索预算沿用配置文件。数据格式和题库评分器用法见[上游评测接口](https://github.com/eryucheng/suzu-memory/blob/main/docs/benchmark.md)。
+
+已有跑分器也可通过 `dsh-suzu-memory/memory` 导入配置工厂、记忆服务、宿主适配器与检索会话，通过 `dsh-suzu-memory/benchmark` 导入统一运行器与工具答题循环。
+
+### 本地验证与打包
 
 ```powershell
 npm ci --ignore-scripts

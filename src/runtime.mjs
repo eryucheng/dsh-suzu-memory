@@ -1,19 +1,28 @@
 import { SessionLogOffset } from '@deepseek-ai/dsh-session';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createMemoryService } from '@suzu-memory/service';
 import { createOpenAiCompatibleEmbeddingProvider } from '@suzu-memory/providers';
-import { createMemoryHttpServer } from '@suzu-memory/server';
 import { memoryEvent, sessionMemoryId, sourceScope } from './events.mjs';
 import { createDshGenerator } from './generator.mjs';
 import { embeddingConfig } from './config.mjs';
 import { maintenanceWindow, liveValue, validateSchedule } from './schedule.mjs';
-import { mountMemoryPage } from './memory-page.mjs';
+import { createMemoryPage } from './memory-page.mjs';
+import { DailyRequestBudget } from './request-budget.mjs';
+import { libraryPaths, libraryExists, storedLibraryIds, removeStoredLibrary } from './library-storage.mjs';
+
+const RAW_EMBEDDING = Symbol('memory-embedding-provider');
 
 /** Owns live capture adapters and saved-library views. Memory owns the stored data. */
 export class DshMemoryRuntime {
-  constructor(ctx, config, isSessionEnabled = () => false) {
+  constructor(ctx, config, isSessionEnabled = () => false, sessionSettings = null) {
     this.ctx = ctx;
     this.config = config;
     this.isSessionEnabled = isSessionEnabled;
+    this.sessionSettings = sessionSettings;
+    this.deleting = new Set();
+    this.consoleOperations = new AsyncLocalStorage();
+    this.budget = new DailyRequestBudget(config.dataRoot, () => config.dailyRequestLimit,
+      config.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone);
     this.sessions = new Map();
     this.savedViews = new Map();
     this.closing = false;
@@ -30,7 +39,7 @@ export class DshMemoryRuntime {
 
   window(now = new Date()) { return maintenanceWindow(this.config, now); }
 
-  enabledFor(session) { return liveValue(this.config.enabled) !== false && this.isSessionEnabled(session.id); }
+  enabledFor(session) { return !this.deleting.has(sessionMemoryId(session.id)) && liveValue(this.config.enabled) !== false && this.isSessionEnabled(session.id); }
 
   requireEnabled(session) {
     if (!this.enabledFor(session)) throw Object.assign(new Error('请先在设置中启用当前会话的 Suzu Memory。'), { code: 'MEMORY_DISABLED' });
@@ -74,7 +83,7 @@ export class DshMemoryRuntime {
     if (this.closing) return;
     for (const entry of this.sessions.values()) {
       this.workSignal(entry);
-      if (entry.recovered && this.enabledFor(entry.session) && !entry.running && !entry.activation.signal.aborted && this.window().allowed && (entry.pendingEvents || entry.maintenancePending)) {
+      if (!this.budget.snapshot().exhausted && entry.recovered && this.enabledFor(entry.session) && !entry.running && !entry.activation.signal.aborted && this.window().allowed && (entry.pendingEvents || entry.maintenancePending)) {
         this.scheduleArchive(entry.session, { flush: entry.deferred || (this.window().offPeakOnly && entry.autoCheckedOffset < 0) });
       }
     }
@@ -87,26 +96,50 @@ export class DshMemoryRuntime {
     this.embeddingConfiguration = config;
     this.embedding = embedding;
     for (const entry of this.sessions.values()) {
-      entry.memory = this.memoryService(entry.session, entry.identity, entry.generator, this.sessionEmbedding(entry.controller, () => entry.activation.signal));
+      entry.memory = this.memoryService(entry.identity, entry.generator, this.sessionEmbedding(entry.controller, () => entry.activation.signal));
     }
   }
 
   sessionEmbedding(controller, getSignal = () => undefined, provider = this.embedding) {
     if (!provider) return null;
+    provider = provider[RAW_EMBEDDING] || provider;
     const optionsFor = (options = {}) => ({ ...options,
       signal: AbortSignal.any([controller.signal, this.controlSignal.signal, getSignal(), options.signal].filter(Boolean)) });
-    const embedding = Object.assign((text, options) => provider(text, optionsFor(options)), {
+    const invoke = async (method, text, options) => {
+      const routed = optionsFor(options);
+      await this.reserveRequest(controller, routed.signal);
+      routed.signal.throwIfAborted();
+      return method(text, routed);
+    };
+    const embedding = Object.assign((text, options) => invoke(provider, text, options), {
       model: provider.model, dimensions: provider.dimensions,
-      embedMany: (texts, options) => provider.embedMany(texts, optionsFor(options)),
+      [RAW_EMBEDDING]: provider,
+      embedMany: (texts, options) => invoke(provider.embedMany, texts, options),
     });
     return embedding;
   }
 
-  memoryService(session, identity, generator, embedding) {
+  async reserveRequest(controller, signal) {
+    try { return await this.budget.reserve(signal); }
+    catch (error) {
+      if (!signal?.aborted) {
+        if (!error.code) error.code = 'MEMORY_BUDGET_UNAVAILABLE';
+        const operation = this.consoleOperations.getStore();
+        operation?.abort(error);
+        for (const entry of this.sessions.values()) if (entry.controller === controller && (operation || entry.workController)) {
+          entry.workController?.abort(error);
+          entry.recoveryNeeded = true; entry.deferred = true; entry.maintenancePending = true; entry.error = error.message;
+        }
+      }
+      throw error;
+    }
+  }
+
+  memoryService(identity, generator, embedding) {
     return createMemoryService({
-      dataRoot: this.config.dataRoot, agentId: sessionMemoryId(session.id),
+      dataRoot: this.config.dataRoot, agentId: identity.agentId,
       defaults: { primaryUserId: identity.userId, userName: identity.userName,
-        memoryOwner: identity.memoryOwner, companionId: sessionMemoryId(session.id),
+        memoryOwner: identity.memoryOwner, companionId: identity.agentId,
         retrieval: { timeZone: this.config.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone } },
       providers: { generator, structureGenerator: generator, retrievalContextGenerator: generator, embedding },
     });
@@ -132,6 +165,7 @@ export class DshMemoryRuntime {
   /** Opening saved data never consumes the conversation or runs model work. */
   view(session) {
     if (this.closing) throw new Error('记忆插件正在退出。');
+    if (this.deleting.has(sessionMemoryId(session.id))) throw Object.assign(new Error('此会话的记忆正在删除。'), { code: 'MEMORY_DELETING' });
     this.refreshEmbedding();
     let entry = this.sessions.get(session.id);
     if (entry) {
@@ -154,9 +188,10 @@ export class DshMemoryRuntime {
       timeoutMs: this.config.analysisTimeoutMs,
       maxTokens: this.config.analysisMaxTokens,
       maximumOutputCharacters: this.config.maximumOutputCharacters,
+      beforeRequest: signal => this.reserveRequest(controller, signal),
     });
     const embedding = this.sessionEmbedding(controller, () => entry?.activation.signal);
-    const memory = this.memoryService(session, identity, generator, embedding);
+    const memory = this.memoryService(identity, generator, embedding);
     memory.initialize();
     const progress = memory.getEventSourceProgress({ scope: sourceScope(session) });
     const nextOffset = Math.max(progress.consumedThroughSequence, Number(session.inheritedEventCount));
@@ -165,7 +200,7 @@ export class DshMemoryRuntime {
       cursor: { nextOffset }, pendingCharacters: 0, pendingEvents: 0,
       flushThrough: 0, autoCheckedOffset: -1, pendingDirty: false, maintenancePending: false,
       controller, activation: new AbortController(), workController: null, manualWork: false, deferred: false, recoveryNeeded: false, recovered: false,
-      running: null, console: null, consoleStarting: null, error: null };
+      running: null, error: null };
     if (!this.enabledFor(session)) entry.activation.abort(Object.assign(new Error('记忆运行已暂停，已有数据仍可查看与审核。'), { code: 'MEMORY_PAUSED' }));
     this.refreshPending(entry);
     entry.maintenancePending = this.maintenanceWork(entry).pending > 0;
@@ -316,9 +351,11 @@ export class DshMemoryRuntime {
       } while (!entry.controller.signal.aborted);
     };
     entry.running = work().catch(error => {
-      if (entry.workController?.signal.reason?.code === 'MEMORY_PAUSED' || entry.activation.signal.reason?.code === 'MEMORY_PAUSED' || this.controlSignal.signal.reason?.code === 'MEMORY_PAUSED') {
+      const budgetPaused = ['MEMORY_BUDGET_EXCEEDED', 'MEMORY_BUDGET_UNAVAILABLE'].includes(entry.workController?.signal.reason?.code);
+      if (budgetPaused || entry.controller.signal.reason?.code === 'MEMORY_PAUSED' || entry.workController?.signal.reason?.code === 'MEMORY_PAUSED' || entry.activation.signal.reason?.code === 'MEMORY_PAUSED' || this.controlSignal.signal.reason?.code === 'MEMORY_PAUSED') {
         entry.recoveryNeeded = true; entry.deferred = true; entry.maintenancePending = true;
-        return { status: 'paused' };
+        if (budgetPaused) entry.error = entry.workController.signal.reason.message;
+        return { status: budgetPaused ? 'budget-exhausted' : 'paused' };
       }
       entry.error = `记忆整理未完成：${error.code || error.name}。`;
       throw error;
@@ -330,6 +367,7 @@ export class DshMemoryRuntime {
     if (!this.enabledFor(session) || !this.window().automatic || !this.window().enabled || this.closing) return;
     try {
       const { entry } = this.consume(session);
+      if (this.budget.snapshot().exhausted) { entry.deferred = true; return; }
       if (!this.window().allowed) {
         if (flush) entry.flushThrough = Math.max(entry.flushThrough, entry.cursor.nextOffset);
         entry.deferred = Boolean(entry.pendingEvents || entry.maintenancePending || flush);
@@ -348,11 +386,8 @@ export class DshMemoryRuntime {
 
   async consoleUrl(entry) {
     if (!this.config.consoleEnabled) return null;
-    const saved = this.savedViews.get(entry.session.id);
-    if (saved) return this.startConsole(saved, entry.session.id,
-      this.consoleService(entry.session.id, () => this.sessions.get(entry.session.id)?.memory || saved.memory, saved.controller));
-    const service = this.consoleService(entry.session.id, () => entry.memory, entry.controller);
-    return this.startConsole(entry, entry.session.id, service);
+    await this.startConsole();
+    return this.console.urlFor(entry?.session ? sessionMemoryId(entry.session.id) : '');
   }
 
   async conversations() {
@@ -367,69 +402,112 @@ export class DshMemoryRuntime {
     return this.conversationListing;
   }
 
-  async openConversation(id) {
-    if (!this.config.consoleEnabled) throw new Error('记忆页面已关闭。');
-    this.controlLifetime.signal.throwIfAborted();
-    if (!(await this.conversations()).some(item => item.id === id)) {
-      throw Object.assign(new Error('会话已不存在或不可访问，请刷新会话列表。'), { code: 'SESSION_NOT_FOUND' });
-    }
-    this.controlLifetime.signal.throwIfAborted();
-    const live = this.ctx.sessions.get(id);
-    if (live) return this.consoleUrl(this.view(live));
-    // A saved library needs neither a restored conversation nor any model providers.
-    let saved = this.savedViews.get(id);
-    if (!saved) {
-      const memory = this.memoryService({ id }, this.memoryIdentity(id), null, null);
-      memory.initialize();
-      saved = { memory, controller: new AbortController(), console: null, consoleStarting: null };
-      this.savedViews.set(id, saved);
-    }
-    return this.startConsole(saved, id, this.consoleService(id, () => this.sessions.get(id)?.memory || saved.memory, saved.controller));
+  async libraries() {
+    const [conversations, settings, stored] = await Promise.all([
+      this.conversations(), this.sessionSettings?.storedSessions() || [], storedLibraryIds(this.config.dataRoot),
+    ]);
+    const known = new Map(conversations.map(item => [sessionMemoryId(item.id), item]));
+    const identities = new Map(settings.map(item => [item.libraryId, item.id]));
+    return [...new Set([...known.keys(), ...stored])].map(id => ({ id,
+      sessionId: known.get(id)?.id || identities.get(id) || null,
+      title: known.get(id)?.title || identities.get(id) || id.slice(0, 16),
+      orphaned: !known.has(id), stored: stored.includes(id),
+    }));
   }
 
-  consoleService(id, getMemory, controller) {
+  async libraryService(libraryId) {
+    if (this.closing || this.deleting.has(libraryId) || !libraryExists(this.config.dataRoot, libraryId)) {
+      throw Object.assign(new Error('记忆库不存在或正在删除。'), { code: 'LIBRARY_NOT_FOUND' });
+    }
+    const live = [...this.sessions.values()].find(entry => entry.identity.agentId === libraryId);
+    if (live) return this.consoleService(live.session.id, () => live.memory, live.controller, libraryId);
+    let saved = this.savedViews.get(libraryId);
+    if (!saved) {
+      const row = (await this.libraries()).find(item => item.id === libraryId);
+      if (!row || this.deleting.has(libraryId)) throw Object.assign(new Error('记忆库不存在。'), { code: 'LIBRARY_NOT_FOUND' });
+      const memory = this.memoryService({ agentId: libraryId, userId: 'user',
+        userName: this.config.userName, memoryOwner: this.config.memoryOwner }, null, null);
+      memory.initialize();
+      saved = { memory, sessionId: row.sessionId, controller: new AbortController() };
+      this.savedViews.set(libraryId, saved);
+    }
+    return this.consoleService(saved.sessionId, () => this.sessions.get(saved.sessionId)?.memory || saved.memory, saved.controller, libraryId);
+  }
+
+  consoleService(id, getMemory, controller, libraryId = sessionMemoryId(id)) {
     const service = Object.create(getMemory());
     Object.defineProperty(service, 'providers', { get: () => getMemory().providers });
     service.withRepository = (callback, options = {}) => {
       const memory = getMemory();
-      const live = this.ctx.sessions.get(id) || this.sessions.get(id)?.session;
-      const scope = sourceScope({ id, seq: Number(live?.seq ?? 0) });
+      const live = id ? this.ctx.sessions.get(id) || this.sessions.get(id)?.session : null;
+      const scope = { owner: 'deepseek-harness', agentId: libraryId, eventUpperBound: Number(live?.seq ?? 0), clears: [] };
       if (!live) scope.eventUpperBound = memory.getEventSourceProgress({ scope }).consumedThroughSequence;
-      return memory.withRepository(callback, { ...options, sourceScope: scope,
-        signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal });
+      // Budget admission cancels the owning operation before input failure counters can advance.
+      const operation = this.consoleOperations.getStore() || new AbortController();
+      return this.consoleOperations.run(operation, () => memory.withRepository(callback, { ...options, sourceScope: scope,
+        signal: AbortSignal.any([controller.signal, operation.signal, options.signal].filter(Boolean)) }));
     };
     service.runMaintenance = options => {
-      const live = this.ctx.sessions.get(id) || this.sessions.get(id)?.session;
+      const live = id ? this.ctx.sessions.get(id) || this.sessions.get(id)?.session : null;
       if (!live) throw Object.assign(new Error('请先在 DSH 中打开此会话，再执行整理。'), { code: 'SESSION_NOT_ACTIVE' });
       return this.maintain(live, { ...options, force: true, lane: options?.lane || 'all' });
     };
     return service;
   }
 
-  async startConsole(entry, sessionId, service) {
-    if (entry.consoleStarting) return entry.consoleStarting;
-    if (entry.console) return entry.console.url;
-    entry.consoleStarting = (async () => {
-      const server = createMemoryHttpServer({ service });
-      mountMemoryPage(server.server, { sessionId, list: () => this.conversations(), open: id => this.openConversation(id) });
+  async startConsole() {
+    if (this.closing) throw new Error('记忆插件正在退出。');
+    if (this.consoleStarting) return this.consoleStarting;
+    if (this.console) return;
+    this.consoleStarting = (async () => {
+      const server = createMemoryPage({ list: () => this.libraries(), open: id => this.libraryService(id),
+        remove: id => this.deleteLibrary(id), budget: () => this.budget.status() });
       try {
-        const address = await server.listen({ host: '127.0.0.1', port: 0 });
-        if (entry.controller.signal.aborted) { await server.close(); return null; }
-        entry.console = { server, url: `${address.baseUrl}/memory/` };
-        return entry.console.url;
+        await server.listen();
+        if (this.closing) { await server.close(); return; }
+        this.console = server;
       } catch (error) { await server.close(); throw error; }
-    })().finally(() => { entry.consoleStarting = null; });
-    return entry.consoleStarting;
+    })().finally(() => { this.consoleStarting = null; });
+    return this.consoleStarting;
+  }
+
+  deleteLibrary(libraryId) {
+    const task = this.removeLibrary(libraryId);
+    this.closures.add(task);
+    return task.finally(() => this.closures.delete(task));
+  }
+
+  async removeLibrary(libraryId) {
+    libraryPaths(this.config.dataRoot, libraryId);
+    if (this.deleting.has(libraryId)) throw Object.assign(new Error('记忆库正在删除。'), { code: 'MEMORY_DELETING' });
+    this.deleting.add(libraryId);
+    try {
+      const entry = [...this.sessions.values()].find(entry => entry.identity.agentId === libraryId);
+      const saved = this.savedViews.get(libraryId);
+      const sessionId = entry?.session.id || saved?.sessionId || (await this.libraries()).find(item => item.id === libraryId)?.sessionId;
+      if (sessionId && this.sessionSettings) {
+        const settings = this.sessionSettings.read(sessionId);
+        const disabled = await this.sessionSettings.setMemoryEnabled(sessionId, false, settings.revision);
+        if (!disabled.saved) throw new Error('会话设置已变化，请刷新后重试删除。');
+      }
+      const reason = Object.assign(new Error('记忆库正在删除。'), { code: 'MEMORY_PAUSED' });
+      entry?.controller.abort(reason); saved?.controller.abort(reason);
+      await this.console?.block(libraryId);
+      if (entry) await this.release(entry.session);
+      if (saved) { await saved.memory.close(); this.savedViews.delete(libraryId); }
+      await removeStoredLibrary(this.config.dataRoot, libraryId);
+      await this.sessionSettings?.removeLibrary(libraryId);
+    } finally { this.deleting.delete(libraryId); this.console?.unblock(libraryId); }
   }
 
   release(session) {
     const entry = this.sessions.get(session.id);
     if (!entry || entry.session !== session) return Promise.resolve();
     this.sessions.delete(session.id);
+    this.console?.invalidate(entry.identity.agentId);
     entry.controller.abort();
     const closing = (async () => {
-      await Promise.allSettled([entry.running, entry.consoleStarting]);
-      if (entry.console) await entry.console.server.close();
+      await Promise.allSettled([entry.running]);
       await entry.memory.close();
     })();
     this.closures.add(closing);
@@ -442,14 +520,14 @@ export class DshMemoryRuntime {
     this.controlSignal.abort();
     this.controlLifetime.abort();
     this.compactions.clear();
+    await Promise.allSettled([this.consoleStarting]);
     const releases = [...this.sessions.values()].map(entry => this.release(entry.session));
     const saved = [...this.savedViews.values()].map(async entry => {
       entry.controller.abort();
-      await Promise.allSettled([entry.consoleStarting]);
-      if (entry.console) await entry.console.server.close();
       await entry.memory.close();
     });
     this.savedViews.clear();
     await Promise.all([...releases, ...saved, ...this.closures]);
+    await this.console?.close();
   }
 }

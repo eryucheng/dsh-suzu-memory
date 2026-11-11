@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -9,11 +8,23 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 import ToolRuntime from '@deepseek-ai/dsh-tools';
 import Commands from '@deepseek-ai/dsh-commands';
 import { resolveConfig } from '../src/config.mjs';
+import { createTestDirectory } from '../vendor/suzu-memory/test/support/suite-resources.mjs';
 
-export function temporary(t) {
-  const root = path.join(process.env.DSH_SUZU_TEST_ROOT || path.join(os.tmpdir(), 'Codex', 'dsh-suzu-memory-tests'), randomUUID());
-  fs.mkdirSync(root, { recursive: true });
-  return root;
+export function temporary() {
+  return createTestDirectory(path.join(os.tmpdir(), 'dsh-suzu-memory-test-'));
+}
+
+export function consoleClient(address) {
+  const url = new URL(address);
+  const key = new URLSearchParams(url.hash.slice(1)).get('key');
+  const libraryId = url.searchParams.get('library');
+  const raw = (pathname, options = {}) => fetch(new URL(pathname, url), {
+    ...options, headers: { ...options.headers, authorization: `Bearer ${key}` },
+  });
+  return { url, libraryId, raw,
+    api: (pathname, options) => raw('/libraries/' + libraryId + pathname, options),
+    review: () => raw('/console/?library=' + libraryId),
+  };
 }
 
 export class ScriptAdapter extends LlmAdapter {
@@ -49,8 +60,8 @@ export async function host(t, script = () => textChunks('{"memories":[]}')) {
   return { ctx, adapter };
 }
 
-export function config(t, overrides = {}) {
-  return resolveConfig({ dataRoot: temporary(t), automaticMaintenance: false, ...overrides });
+export function config(overrides = {}) {
+  return resolveConfig({ dataRoot: temporary(), automaticMaintenance: false, ...overrides });
 }
 
 export function session(id = randomUUID()) {
@@ -69,9 +80,8 @@ export function assistant(value, text, turn = 1) {
 }
 
 export function eventCandidate(content = 'User 今天去了灯塔博物馆。') {
-  return { kind: 'event', title: '参观灯塔博物馆', content, subjectRole: 'user', subjectName: 'User',
-    actorRoles: [{ role: 'experiencer', actorRole: 'user', actorName: 'User', confidence: 1 }],
-    canonicalKey: '', stateFamily: 'not_applicable', stateLabel: '', reality: 'real', evidenceMode: 'explicit',
-    temporalState: 'historical', revisionAction: 'add', retentionReason: 'significant_event', eventDate: '', eventStart: '', eventEnd: '',
+  return { title: '参观灯塔博物馆', content, classification: { category: 'event' }, subject: { name: 'User' },
+    actors: [{ role: 'experiencer', person: { name: 'User' }, confidence: 1 }],
+    reality: 'real', evidenceMode: 'explicit', temporalState: 'historical', revisionAction: 'add', time: null,
     confidence: 0.95, importance: 0.75, sourceRefs: ['M0001'] };
 }
